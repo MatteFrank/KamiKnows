@@ -1,0 +1,32 @@
+[
+  {
+    "arxiv_id": "0000.00001v1",
+    "title": "Fast calorimeter simulation for high energy physics",
+    "authors": ["Ada Example", "Bruno Example"],
+    "abstract": "We present a lightweight approach for fast calorimeter response simulation in high energy physics. The method uses parameterized shower shapes calibrated on reference detector samples. It reduces inference time compared with detailed simulation while preserving selected observables within limited validation regions.",
+    "categories": ["hep-ex", "physics.ins-det"],
+    "published": "2026-01-01T00:00:00Z",
+    "url": "https://arxiv.org/abs/0000.00001v1",
+    "note": "Offline tutorial batch example. This is not a real arXiv paper record."
+  },
+  {
+    "arxiv_id": "0000.00002v1",
+    "title": "Graph-based reconstruction study for particle detector events",
+    "authors": ["Chiara Example", "Diego Example"],
+    "abstract": "We study a graph-based event reconstruction workflow for particle detector data. Detector hits are represented as nodes and candidate relations are represented as edges. The method is evaluated on simplified simulated samples and compared with a baseline reconstruction strategy.",
+    "categories": ["hep-ex", "cs.LG"],
+    "published": "2026-01-02T00:00:00Z",
+    "url": "https://arxiv.org/abs/0000.00002v1",
+    "note": "Offline tutorial batch example. This is not a real arXiv paper record."
+  },
+  {
+    "arxiv_id": "0000.00003v1",
+    "title": "Uncertainty-aware surrogate modelling for detector response studies",
+    "authors": ["Elena Example", "Farid Example"],
+    "abstract": "We investigate uncertainty-aware surrogate models for detector response studies in high energy physics. The approach estimates predictive intervals together with response observables and is tested on a small controlled simulation sample. Further validation is required before use in precision analyses.",
+    "categories": ["hep-ex", "stat.ML"],
+    "published": "2026-01-03T00:00:00Z",
+    "url": "https://arxiv.org/abs/0000.00003v1",
+    "note": "Offline tutorial batch example. This is not a real arXiv paper record."
+  }
+]

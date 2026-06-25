@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Generated KnowKami outputs
+outputs/*.jsonl
+
+# OS/editor
+.DS_Store

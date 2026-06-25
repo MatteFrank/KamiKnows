@@ -1,0 +1,16 @@
+{
+  "arxiv_id": "0000.00000v1",
+  "title": "Fast calorimeter simulation for high energy physics",
+  "authors": [
+    "Ada Example",
+    "Bruno Example"
+  ],
+  "abstract": "We present a lightweight method for fast calorimeter response simulation in high energy physics. The method uses parameterized shower shapes calibrated on reference detector samples. It reduces runtime compared with detailed simulation while preserving key observables within limited validation regions. The approach is intended for early analysis studies and requires further validation on full detector geometries.",
+  "categories": [
+    "hep-ex",
+    "physics.ins-det"
+  ],
+  "published": "2026-01-01T00:00:00Z",
+  "url": "https://arxiv.org/abs/0000.00000v1",
+  "note": "Offline tutorial example. This is not a real arXiv paper record."
+}
