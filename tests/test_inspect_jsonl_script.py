@@ -81,3 +81,69 @@ def test_inspect_jsonl_rejects_non_positive_limit(tmp_path: Path, capsys) -> Non
     captured = capsys.readouterr()
     assert exit_code == 1
     assert "--limit must be >= 1" in captured.err
+
+
+def test_inspect_jsonl_markdown_mode_writes_explicit_output(
+    tmp_path: Path, capsys
+) -> None:
+    output_path = tmp_path / "records.jsonl"
+    markdown_path = tmp_path / "readable.md"
+    append_jsonl_record(
+        _traceable_record("0000.00001v1", "First HEP tutorial paper"), output_path
+    )
+
+    exit_code = inspect_jsonl.main(
+        [
+            str(output_path),
+            "--mode",
+            "markdown",
+            "--output",
+            str(markdown_path),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    markdown = markdown_path.read_text(encoding="utf-8")
+    assert exit_code == 0
+    assert f"Markdown export written to: {markdown_path}" in captured.out
+    assert "# Readable export for records.jsonl" in markdown
+    assert "## Record 1" in markdown
+    assert "- arXiv ID: `0000.00001v1`" in markdown
+    assert "- Title: `First HEP tutorial paper`" in markdown
+    assert "- Backend: `fake`" in markdown
+    assert "- Model: `fake`" in markdown
+    assert "- Prompt version: `abstract_to_json_v0`" in markdown
+    assert "- Schema version: `extraction_schema_v0`" in markdown
+    assert "### Extraction" in markdown
+    assert "```json" in markdown
+    assert '"main_claim": "A small tutorial claim is extracted from the abstract."' in markdown
+
+
+def test_inspect_jsonl_markdown_mode_uses_default_output_path(
+    tmp_path: Path, capsys
+) -> None:
+    output_path = tmp_path / "records.jsonl"
+    append_jsonl_record(_traceable_record("0000.00001v1", "First paper"), output_path)
+
+    exit_code = inspect_jsonl.main([str(output_path), "--mode", "markdown"])
+
+    captured = capsys.readouterr()
+    markdown_path = tmp_path / "records_readable.md"
+    assert exit_code == 0
+    assert markdown_path.exists()
+    assert f"Markdown export written to: {markdown_path}" in captured.out
+
+
+def test_inspect_jsonl_rejects_output_in_inspect_mode(
+    tmp_path: Path, capsys
+) -> None:
+    output_path = tmp_path / "records.jsonl"
+    append_jsonl_record(_traceable_record("0000.00001v1", "First paper"), output_path)
+
+    exit_code = inspect_jsonl.main(
+        [str(output_path), "--mode", "inspect", "--output", str(tmp_path / "out.md")]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "--output is only supported with --mode markdown" in captured.err

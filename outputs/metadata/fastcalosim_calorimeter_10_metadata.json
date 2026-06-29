@@ -1,0 +1,342 @@
+[
+  {
+    "abstract": "Physicists at the Large Hadron Collider (LHC) rely on detailed simulations of particle collisions to build expectations of what experimental data may look like under different theory modeling assumptions. Petabytes of simulated data are needed to develop analysis techniques, though they are expensive to generate using existing algorithms and computing resources. The modeling of detectors and the precise description of particle cascades as they interact with the material in the calorimeter are the most computationally demanding steps in the simulation pipeline. We therefore introduce a deep neural network-based generative model to enable high-fidelity, fast, electromagnetic calorimeter simulation. There are still challenges for achieving precision across the entire phase space, but our current solution can reproduce a variety of particle shower properties while achieving speed-up factors of up to 100,000$\\times$. This opens the door to a new era of fast simulation that could save significant computing time and disk space, while extending the reach of physics searches and precision measurements at the LHC and beyond.",
+    "arxiv_id": "1705.02355v2",
+    "authors": [
+      "Michela Paganini",
+      "Luke de Oliveira",
+      "Benjamin Nachman"
+    ],
+    "categories": [
+      "hep-ex",
+      "hep-ph",
+      "stat.ML"
+    ],
+    "published": "2017-05-05T18:20:47Z",
+    "title": "Accelerating Science with Generative Adversarial Networks: An Application to 3D Particle Showers in Multi-Layer Calorimeters",
+    "url": "https://arxiv.org/abs/1705.02355v2"
+  },
+  {
+    "abstract": "The precise modeling of subatomic particle interactions and propagation through matter is paramount for the advancement of nuclear and particle physics searches and precision measurements. The most computationally expensive step in the simulation pipeline of a typical experiment at the Large Hadron Collider (LHC) is the detailed modeling of the full complexity of physics processes that govern the motion and evolution of particle showers inside calorimeters. We introduce \\textsc{CaloGAN}, a new fast simulation technique based on generative adversarial networks (GANs). We apply these neural networks to the modeling of electromagnetic showers in a longitudinally segmented calorimeter, and achieve speedup factors comparable to or better than existing full simulation techniques on CPU ($100\\times$-$1000\\times$) and even faster on GPU (up to $\\sim10^5\\times$). There are still challenges for achieving precision across the entire phase space, but our solution can reproduce a variety of geometric shower shape properties of photons, positrons and charged pions. This represents a significant stepping stone toward a full neural network-based detector simulation that could save significant computing time and enable many analyses now and in the future.",
+    "arxiv_id": "1712.10321v1",
+    "authors": [
+      "Michela Paganini",
+      "Luke de Oliveira",
+      "Benjamin Nachman"
+    ],
+    "categories": [
+      "hep-ex",
+      "cs.LG",
+      "hep-ph",
+      "stat.ML"
+    ],
+    "published": "2017-12-21T22:28:53Z",
+    "title": "CaloGAN: Simulating 3D High Energy Particle Showers in Multi-Layer Electromagnetic Calorimeters with Generative Adversarial Networks",
+    "url": "https://arxiv.org/abs/1712.10321v1"
+  },
+  {
+    "abstract": "Deep generative models parametrised by neural networks have recently started to provide accurate results in modelling natural images. In particular, generative adversarial networks provide an unsupervised solution to this problem. In this work we apply this kind of technique to the simulation of particle-detector response to hadronic jets. We show that deep neural networks can achieve high-fidelity in this task, while attaining a speed increase of several orders of magnitude with respect to traditional algorithms.",
+    "arxiv_id": "1805.00850v2",
+    "authors": [
+      "Pasquale Musella",
+      "Francesco Pandolfi"
+    ],
+    "categories": [
+      "hep-ex",
+      "hep-ph",
+      "physics.data-an"
+    ],
+    "published": "2018-05-02T14:55:01Z",
+    "title": "Fast and accurate simulation of particle detectors using generative adversarial networks",
+    "url": "https://arxiv.org/abs/1805.00850v2"
+  },
+  {
+    "abstract": "Simulations of particle showers in calorimeters are computationally time-consuming, as they have to reproduce both energy depositions and their considerable fluctuations. A new approach to ultra-fast simulations are generative models where all calorimeter energy depositions are generated simultaneously. We use GEANT4 simulations of an electron beam impinging on a multi-layer electromagnetic calorimeter for adversarial training of a generator network and a critic network guided by the Wasserstein distance. The generator is constraint during the training such that the generated showers show the expected dependency on the initial energy and the impact position. It produces realistic calorimeter energy depositions, fluctuations and correlations which we demonstrate in distributions of typical calorimeter observables. In most aspects, we observe that generated calorimeter showers reach the level of showers as simulated with the GEANT4 program.",
+    "arxiv_id": "1807.01954v2",
+    "authors": [
+      "Martin Erdmann",
+      "Jonas Glombitza",
+      "Thorben Quast"
+    ],
+    "categories": [
+      "physics.ins-det",
+      "hep-ex"
+    ],
+    "published": "2018-07-05T12:05:19Z",
+    "title": "Precise simulation of electromagnetic calorimeter showers using a Wasserstein Generative Adversarial Network",
+    "url": "https://arxiv.org/abs/1807.01954v2"
+  },
+  {
+    "abstract": "We introduce CaloFlow, a fast detector simulation framework based on normalizing flows. For the first time, we demonstrate that normalizing flows can reproduce many-channel calorimeter showers with extremely high fidelity, providing a fresh alternative to computationally expensive GEANT4 simulations, as well as other state-of-the-art fast simulation frameworks based on GANs and VAEs. Besides the usual histograms of physical features and images of calorimeter showers, we introduce a new metric for judging the quality of generative modeling: the performance of a classifier trained to differentiate real from generated images. We show that GAN-generated images can be identified by the classifier with nearly 100% accuracy, while images generated from CaloFlow are better able to fool the classifier. More broadly, normalizing flows offer several advantages compared to other state-of-the-art approaches (GANs and VAEs), including: tractable likelihoods; stable and convergent training; and principled model selection. Normalizing flows also provide a bijective mapping between data and the latent space, which could have other applications beyond simulation, for example, to detector unfolding.",
+    "arxiv_id": "2106.05285v3",
+    "authors": [
+      "Claudius Krause",
+      "David Shih"
+    ],
+    "categories": [
+      "physics.ins-det",
+      "cs.LG",
+      "hep-ex",
+      "hep-ph",
+      "physics.data-an"
+    ],
+    "published": "2021-06-09T18:00:02Z",
+    "title": "CaloFlow: Fast and Accurate Generation of Calorimeter Showers with Normalizing Flows",
+    "url": "https://arxiv.org/abs/2106.05285v3"
+  },
+  {
+    "abstract": "Score-based generative models are a new class of generative algorithms that have been shown to produce realistic images even in high dimensional spaces, currently surpassing other state-of-the-art models for different benchmark categories and applications. In this work we introduce CaloScore, a score-based generative model for collider physics applied to calorimeter shower generation. Three different diffusion models are investigated using the Fast Calorimeter Simulation Challenge 2022 dataset. CaloScore is the first application of a score-based generative model in collider physics and is able to produce high-fidelity calorimeter images for all datasets, providing an alternative paradigm for calorimeter shower simulation.",
+    "arxiv_id": "2206.11898v3",
+    "authors": [
+      "Vinicius Mikuni",
+      "Benjamin Nachman"
+    ],
+    "categories": [
+      "hep-ph",
+      "cs.LG",
+      "hep-ex",
+      "physics.data-an",
+      "physics.ins-det"
+    ],
+    "published": "2022-06-17T18:01:02Z",
+    "title": "Score-based Generative Models for Calorimeter Shower Simulation",
+    "url": "https://arxiv.org/abs/2206.11898v3"
+  },
+  {
+    "abstract": "The need for large-scale production of highly accurate simulated event samples for the extensive physics programme of the ATLAS experiment at the Large Hadron Collider motivates the development of new simulation techniques. Building on the recent success of deep learning algorithms, variational autoencoders and generative adversarial networks are investigated for modelling the response of the central region of the ATLAS electromagnetic calorimeter to photons of various energies. The properties of synthesised showers are compared with showers from a full detector simulation using GEANT4. Both variational autoencoders and generative adversarial networks are capable of quickly simulating electromagnetic showers with correct total energies and stochasticity, though the modelling of some shower shape distributions requires more refinement. This feasibility study demonstrates the potential of using such algorithms for ATLAS fast calorimeter simulation in the future and shows a possible way to complement current simulation techniques.",
+    "arxiv_id": "2210.06204v2",
+    "authors": [
+      "ATLAS Collaboration"
+    ],
+    "categories": [
+      "hep-ex",
+      "physics.ins-det"
+    ],
+    "published": "2022-10-12T13:44:24Z",
+    "title": "Deep generative models for fast photon shower simulation in ATLAS",
+    "url": "https://arxiv.org/abs/2210.06204v2"
+  },
+  {
+    "abstract": "Calorimeter simulation is the most computationally expensive part of Monte Carlo generation of samples necessary for analysis of experimental data at the Large Hadron Collider (LHC). The High-Luminosity upgrade of the LHC would require an even larger amount of such samples. We present a technique based on Discrete Variational Autoencoders (DVAEs) to simulate particle showers in Electromagnetic Calorimeters. We discuss how this work paves the way towards exploration of quantum annealing processors as sampling devices for generation of simulated High Energy Physics datasets.",
+    "arxiv_id": "2210.07430v1",
+    "authors": [
+      "Abhishek Abhishek",
+      "Eric Drechsler",
+      "Wojciech Fedorko",
+      "Bernd Stelzer"
+    ],
+    "categories": [
+      "physics.ins-det",
+      "cs.LG",
+      "hep-ex",
+      "stat.ML"
+    ],
+    "published": "2022-10-14T00:18:40Z",
+    "title": "CaloDVAE : Discrete Variational Autoencoders for Fast Calorimeter Shower Simulation",
+    "url": "https://arxiv.org/abs/2210.07430v1"
+  },
+  {
+    "abstract": "Precision measurements and new physics searches at the Large Hadron Collider require efficient simulations of particle propagation and interactions within the detectors. The most computationally expensive simulations involve calorimeter showers. Advances in deep generative modelling - particularly in the realm of high-dimensional data - have opened the possibility of generating realistic calorimeter showers orders of magnitude more quickly than physics-based simulation. However, the high-dimensional representation of showers belies the relative simplicity and structure of the underlying physical laws. This phenomenon is yet another example of the manifold hypothesis from machine learning, which states that high-dimensional data is supported on low-dimensional manifolds. We thus propose modelling calorimeter showers first by learning their manifold structure, and then estimating the density of data across this manifold. Learning manifold structure reduces the dimensionality of the data, which enables fast training and generation when compared with competing methods.",
+    "arxiv_id": "2211.15380v1",
+    "authors": [
+      "Jesse C. Cresswell",
+      "Brendan Leigh Ross",
+      "Gabriel Loaiza-Ganem",
+      "Humberto Reyes-Gonzalez",
+      "Marco Letizia",
+      "Anthony L. Caterini"
+    ],
+    "categories": [
+      "hep-ph",
+      "cs.LG",
+      "hep-ex",
+      "physics.data-an",
+      "physics.ins-det"
+    ],
+    "published": "2022-11-23T19:00:03Z",
+    "title": "CaloMan: Fast generation of calorimeter showers with density estimation on learned manifolds",
+    "url": "https://arxiv.org/abs/2211.15380v1"
+  },
+  {
+    "abstract": "Simulating showers of particles in highly-granular detectors is a key frontier in the application of machine learning to particle physics. Achieving high accuracy and speed with generative machine learning models would enable them to augment traditional simulations and alleviate a major computing constraint. This work achieves a major breakthrough in this task by, for the first time, directly generating a point cloud of a few thousand space points with energy depositions in the detector in 3D space without relying on a fixed-grid structure. This is made possible by two key innovations: i) Using recent improvements in generative modeling we apply a diffusion model to generate photon showers as high-cardinality point clouds. ii) These point clouds of up to $6,000$ space points are largely geometry-independent as they are down-sampled from initial even higher-resolution point clouds of up to $40,000$ so-called Geant4 steps. We showcase the performance of this approach using the specific example of simulating photon showers in the planned electromagnetic calorimeter of the International Large Detector (ILD) and achieve overall good modeling of physically relevant distributions.",
+    "arxiv_id": "2305.04847v2",
+    "authors": [
+      "Erik Buhmann",
+      "Sascha Diefenbacher",
+      "Engin Eren",
+      "Frank Gaede",
+      "Gregor Kasieczka",
+      "Anatolii Korol",
+      "William Korcari",
+      "Katja Krüger",
+      "Peter McKeown"
+    ],
+    "categories": [
+      "physics.ins-det",
+      "cs.LG",
+      "hep-ex",
+      "hep-ph",
+      "physics.data-an"
+    ],
+    "published": "2023-05-08T16:44:15Z",
+    "title": "CaloClouds: Fast Geometry-Independent Highly-Granular Calorimeter Simulation",
+    "url": "https://arxiv.org/abs/2305.04847v2"
+  },
+  {
+    "abstract": "Simulating particle detector response is the single most expensive step in the Large Hadron Collider computational pipeline. Recently it was shown that normalizing flows can accelerate this process while achieving unprecedented levels of accuracy, but scaling this approach up to higher resolutions relevant for future detector upgrades leads to prohibitive memory constraints. To overcome this problem, we introduce Inductive CaloFlow (iCaloFlow), a framework for fast detector simulation based on an inductive series of normalizing flows trained on the pattern of energy depositions in pairs of consecutive calorimeter layers. We further use a teacher-student distillation to increase sampling speed without loss of expressivity. As we demonstrate with Datasets 2 and 3 of the CaloChallenge2022, iCaloFlow can realize the potential of normalizing flows in performing fast, high-fidelity simulation on detector geometries that are ~ 10 - 100 times higher granularity than previously considered.",
+    "arxiv_id": "2305.11934v2",
+    "authors": [
+      "Matthew R. Buckley",
+      "Claudius Krause",
+      "Ian Pang",
+      "David Shih"
+    ],
+    "categories": [
+      "physics.ins-det",
+      "cs.LG",
+      "hep-ex",
+      "hep-ph",
+      "physics.data-an"
+    ],
+    "published": "2023-05-19T18:00:00Z",
+    "title": "Inductive Simulation of Calorimeter Showers with Normalizing Flows",
+    "url": "https://arxiv.org/abs/2305.11934v2"
+  },
+  {
+    "abstract": "Simulation is crucial for all aspects of collider data analysis, but the available computing budget in the High Luminosity LHC era will be severely constrained. Generative machine learning models may act as surrogates to replace physics-based full simulation of particle detectors, and diffusion models have recently emerged as the state of the art for other generative tasks. We introduce CaloDiffusion, a denoising diffusion model trained on the public CaloChallenge datasets to generate calorimeter showers. Our algorithm employs 3D cylindrical convolutions, which take advantage of symmetries of the underlying data representation. To handle irregular detector geometries, we augment the diffusion model with a new geometry latent mapping (GLaM) layer to learn forward and reverse transformations to a regular geometry that is suitable for cylindrical convolutions. The showers generated by our approach are nearly indistinguishable from the full simulation, as measured by several different metrics.",
+    "arxiv_id": "2308.03876v3",
+    "authors": [
+      "Oz Amram",
+      "Kevin Pedro"
+    ],
+    "categories": [
+      "physics.ins-det",
+      "hep-ex",
+      "hep-ph",
+      "physics.data-an"
+    ],
+    "published": "2023-08-07T19:09:33Z",
+    "title": "Denoising diffusion models with geometry adaptation for high fidelity calorimeter simulation",
+    "url": "https://arxiv.org/abs/2308.03876v3"
+  },
+  {
+    "abstract": "Calorimeter shower simulation is a major bottleneck in the Large Hadron Collider computational pipeline. There have been recent efforts to employ deep-generative surrogate models to overcome this challenge. However, many of best performing models have training and generation times that do not scale well to high-dimensional calorimeter showers. In this work, we introduce SuperCalo, a flow-based superresolution model, and demonstrate that high-dimensional fine-grained calorimeter showers can be quickly upsampled from coarse-grained showers. This novel approach presents a way to reduce computational cost, memory requirements and generation time associated with fast calorimeter simulation models. Additionally, we show that the showers upsampled by SuperCalo possess a high degree of variation. This allows a large number of high-dimensional calorimeter showers to be upsampled from much fewer coarse showers with high-fidelity, which results in additional reduction in generation time.",
+    "arxiv_id": "2308.11700v3",
+    "authors": [
+      "Ian Pang",
+      "John Andrew Raine",
+      "David Shih"
+    ],
+    "categories": [
+      "physics.ins-det",
+      "cs.LG",
+      "hep-ex",
+      "hep-ph",
+      "physics.data-an"
+    ],
+    "published": "2023-08-22T18:00:00Z",
+    "title": "Calorimeter shower superresolution",
+    "url": "https://arxiv.org/abs/2308.11700v3"
+  },
+  {
+    "abstract": "Denoising diffusion models have gained prominence in various generative tasks, prompting their exploration for the generation of calorimeter responses. Given the computational challenges posed by detector simulations in high-energy physics experiments, the necessity to explore new machine-learning-based approaches is evident. This study introduces a novel graph-based diffusion model designed specifically for rapid calorimeter simulations. The methodology is particularly well-suited for low-granularity detectors featuring irregular geometries. We apply this model to the ATLAS dataset published in the context of the Fast Calorimeter Simulation Challenge 2022, marking the first application of a graph diffusion model in the field of particle physics.",
+    "arxiv_id": "2402.11575v1",
+    "authors": [
+      "Dmitrii Kobylianskii",
+      "Nathalie Soybelman",
+      "Etienne Dreyer",
+      "Eilam Gross"
+    ],
+    "categories": [
+      "hep-ex",
+      "hep-ph"
+    ],
+    "published": "2024-02-18T12:45:36Z",
+    "title": "CaloGraph: Graph-based diffusion model for fast shower generation in calorimeters with irregular geometry",
+    "url": "https://arxiv.org/abs/2402.11575v1"
+  },
+  {
+    "abstract": "We present the results of the \"Fast Calorimeter Simulation Challenge 2022\" - the CaloChallenge. We study state-of-the-art generative models on four calorimeter shower datasets of increasing dimensionality, ranging from a few hundred voxels to a few tens of thousand voxels. The 31 individual submissions span a wide range of current popular generative architectures, including Variational AutoEncoders (VAEs), Generative Adversarial Networks (GANs), Normalizing Flows, Diffusion models, and models based on Conditional Flow Matching. We compare all submissions in terms of quality of generated calorimeter showers, as well as shower generation time and model size. To assess the quality we use a broad range of different metrics including differences in 1-dimensional histograms of observables, KPD/FPD scores, AUCs of binary classifiers, and the log-posterior of a multiclass classifier. The results of the CaloChallenge provide the most complete and comprehensive survey of cutting-edge approaches to calorimeter fast simulation to date. In addition, our work provides a uniquely detailed perspective on the important problem of how to evaluate generative models. As such, the results presented here should be applicable for other domains that use generative AI and require fast and faithful generation of samples in a large phase space.",
+    "arxiv_id": "2410.21611v2",
+    "authors": [
+      "Claudius Krause",
+      "Michele Faucci Giannelli",
+      "Gregor Kasieczka",
+      "Benjamin Nachman",
+      "Dalila Salamani",
+      "David Shih",
+      "Anna Zaborowska",
+      "Oz Amram",
+      "Kerstin Borras",
+      "Matthew R. Buckley",
+      "Erik Buhmann",
+      "Thorsten Buss",
+      "Renato Paulo Da Costa Cardoso",
+      "Anthony L. Caterini",
+      "Nadezda Chernyavskaya",
+      "Federico A. G. Corchia",
+      "Jesse C. Cresswell",
+      "Sascha Diefenbacher",
+      "Etienne Dreyer",
+      "Vijay Ekambaram",
+      "Engin Eren",
+      "Florian Ernst",
+      "Luigi Favaro",
+      "Matteo Franchini",
+      "Frank Gaede",
+      "Eilam Gross",
+      "Shih-Chieh Hsu",
+      "Kristina Jaruskova",
+      "Benno Käch",
+      "Jayant Kalagnanam",
+      "Raghav Kansal",
+      "Taewoo Kim",
+      "Dmitrii Kobylianskii",
+      "Anatolii Korol",
+      "William Korcari",
+      "Dirk Krücker",
+      "Katja Krüger",
+      "Marco Letizia",
+      "Shu Li",
+      "Qibin Liu",
+      "Xiulong Liu",
+      "Gabriel Loaiza-Ganem",
+      "Thandikire Madula",
+      "Peter McKeown",
+      "Isabell-A. Melzer-Pellmann",
+      "Vinicius Mikuni",
+      "Nam Nguyen",
+      "Ayodele Ore",
+      "Sofia Palacios Schweitzer",
+      "Ian Pang",
+      "Kevin Pedro",
+      "Tilman Plehn",
+      "Witold Pokorski",
+      "Huilin Qu",
+      "Piyush Raikwar",
+      "John A. Raine",
+      "Humberto Reyes-Gonzalez",
+      "Lorenzo Rinaldi",
+      "Brendan Leigh Ross",
+      "Moritz A. W. Scham",
+      "Simon Schnake",
+      "Chase Shimmin",
+      "Eli Shlizerman",
+      "Nathalie Soybelman",
+      "Mudhakar Srivatsa",
+      "Kalliopi Tsolaki",
+      "Sofia Vallecorsa",
+      "Kyongmin Yeo",
+      "Rui Zhang"
+    ],
+    "categories": [
+      "physics.ins-det",
+      "cs.LG",
+      "hep-ex",
+      "hep-ph"
+    ],
+    "published": "2024-10-28T23:28:07Z",
+    "title": "CaloChallenge 2022: A Community Challenge for Fast Calorimeter Simulation",
+    "url": "https://arxiv.org/abs/2410.21611v2"
+  }
+]
