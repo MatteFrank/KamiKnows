@@ -1,0 +1,8 @@
+# KamiKnows Fase 1F — full-text parsing pilot
+# 3–5 FastCaloSimulation / calorimetry papers from accepted abstract pilot
+
+1705.02355v2
+1712.10321v1
+1805.00850v2
+1807.01954v2
+2106.05285v3
