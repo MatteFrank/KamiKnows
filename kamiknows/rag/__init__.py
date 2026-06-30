@@ -7,6 +7,7 @@ discovery claims.
 """
 
 from kamiknows.rag.retriever import TfidfRetriever
+from kamiknows.rag.embedding_selection import EmbeddingEncoder
 from kamiknows.rag.retriever_v1 import TfidfRetrieverV1
 
-__all__ = ["TfidfRetriever", "TfidfRetrieverV1"]
+__all__ = ["EmbeddingEncoder", "TfidfRetriever", "TfidfRetrieverV1"]
