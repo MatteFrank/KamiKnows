@@ -87,6 +87,8 @@ outputs/rag_v1_fastcalosim_embedding_selection/embedding_cache/
 
 All metrics use top_k=5 and expected arXiv/source matching from the existing eval set.
 
+The mean reciprocal rank (MRR) is a statistic measure for evaluating any process that produces a list of possible responses to a sample of queries, ordered by probability of correctness. The reciprocal rank of a query response is the multiplicative inverse of the rank of the first correct answer: 1 for first place, 1⁄2 for second place, 1⁄3 for third place and so on.
+
 | Model | Backend | Hit@5 | Retrieval miss | Mean expected rank | MRR | Avg query sec | Index build sec |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `sentence-transformers/all-MiniLM-L6-v2` | `hash` | 0.625 | 3 | 1.600 | 0.479 | 0.001276 | 0.014705 |
