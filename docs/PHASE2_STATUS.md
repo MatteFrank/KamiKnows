@@ -15,10 +15,12 @@ Completed Phase 2 tasks:
 - P2T3: chunking and metadata v1.
 - P2T4: QA grounded v1.
 - P2T4b: QA grounded v1 JSON config refactor.
+- P2T5: manual grounding review artifacts.
+- P2T5b: hardened RAG eval questions externalized to data.
 
 Next practical task:
 
-- Manual grounding review of P2T4 generated answers.
+- Complete human grounding review of generated QA answers.
 
 ## Current Dataset
 
@@ -34,6 +36,7 @@ Counts:
 - chunks: 108
 - equations: 28
 - eval questions v0: 8
+- canonical hardened RAG eval questions v1: 13
 
 Known data issue:
 
@@ -91,6 +94,16 @@ configs/phase2_p2t4_qa_grounded_v1.json
 docs/task_reports/phase2_task04b_config_refactor.md
 ```
 
+P2T5/P2T5b eval and review artifacts:
+
+```text
+outputs/rag_v1_fastcalosim_manual_review/
+data/eval/rag_eval_set_v1_hardened.jsonl
+data/eval/rag_eval_set_v1_hardened.md
+docs/task_reports/phase2_task05_manual_grounding_review_v1.md
+docs/task_reports/phase2_task05b_eval_externalization_hardening.md
+```
+
 The P2T4b config default output directory is:
 
 ```text
@@ -139,6 +152,16 @@ P2T4b default model update:
 
 - default middle model is now `qwen3:4b-instruct`, not `qwen3:4b`.
 
+P2T5b eval externalization:
+
+- canonical eval file: `data/eval/rag_eval_set_v1_hardened.jsonl`
+- total questions: 13
+- insufficient-evidence questions: `eval_v0_q008`, `eval_v1_q013`
+- multi-source questions requiring all expected sources: `eval_v0_q005`,
+  `eval_v0_q006`, `eval_v1_q012`
+- no operational eval question text is hard-coded in
+  `kamiknows/rag/qa_grounded_v1.py`
+
 ## Known Limits
 
 - The corpus is intentionally small and fixed.
@@ -156,7 +179,7 @@ Goal:
 
 - Review generated P2T4 answers manually for grounding and scientific quality.
 - Decide whether to rerun QA grounded v1 in a new output directory with
-  `qwen3:4b-instruct`.
+  the hardened eval set and `qwen3:4b-instruct`.
 
 Non-claims:
 

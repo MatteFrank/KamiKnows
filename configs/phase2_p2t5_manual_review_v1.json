@@ -64,7 +64,7 @@
       "eval_v0_q002",
       "eval_v0_q005"
     ],
-    "write_static_v1_questions_file": "data/eval/rag_eval_questions_v1_static.jsonl",
+    "canonical_hardened_eval_set_file": "data/eval/rag_eval_set_v1_hardened.jsonl",
     "llm_question_generation_enabled": false,
     "llm_as_final_judge_enabled": false
   },

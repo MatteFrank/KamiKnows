@@ -13,7 +13,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from kamiknows.rag.load_dataset import RagDatasetError
-from kamiknows.rag.qa_grounded_v1 import DEFAULT_BASE_URL, DEFAULT_TOP_K, run_qa_grounded_v1
+from kamiknows.rag.qa_grounded_v1 import (
+    DEFAULT_BASE_URL,
+    DEFAULT_HARDENED_EVAL_QUESTIONS_PATH,
+    DEFAULT_TOP_K,
+    run_qa_grounded_v1,
+)
 
 DEFAULT_CONFIG_PATH = Path("configs/phase2_p2t4_qa_grounded_v1.json")
 
@@ -47,6 +52,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--top-p", type=float, default=None)
     parser.add_argument("--num-predict", type=int, default=None)
     parser.add_argument("--timeout-seconds", type=int, default=None)
+    parser.add_argument(
+        "--eval-questions-file",
+        type=Path,
+        default=None,
+        help=f"Canonical eval-question JSONL file. Default in config: {DEFAULT_HARDENED_EVAL_QUESTIONS_PATH}.",
+    )
     parser.add_argument("--static-v1-questions-path", type=Path, default=None)
     return parser.parse_args(argv)
 
@@ -101,9 +112,14 @@ def resolve_run_settings(args: argparse.Namespace) -> dict[str, Any]:
             int,
         ),
         "eval_set_mode": str(eval_config.get("mode") or "v0_plus_static_v1"),
+        "eval_questions_file": (
+            args.eval_questions_file
+            or _path_value(eval_config.get("questions_file"))
+            or _path_value(eval_config.get("eval_questions_file"))
+        ),
         "static_v1_questions_enabled": _resolve_bool(
             eval_config.get("static_v1_questions_enabled"),
-            True,
+            False,
         ),
         "static_v1_questions_path": (
             args.static_v1_questions_path
@@ -132,6 +148,7 @@ def main(argv: list[str] | None = None) -> int:
             num_predict=settings["num_predict"],
             timeout_seconds=settings["timeout_seconds"],
             eval_set_mode=settings["eval_set_mode"],
+            eval_questions_file=settings["eval_questions_file"],
             static_v1_questions_enabled=settings["static_v1_questions_enabled"],
             static_v1_questions_path=settings["static_v1_questions_path"],
             llm_question_generation_enabled=settings["llm_question_generation_enabled"],

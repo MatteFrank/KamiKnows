@@ -7,9 +7,11 @@ from pathlib import Path
 
 from kamiknows.rag.qa_grounded_v1 import (
     DEFAULT_MODEL_NAMES,
+    DEFAULT_HARDENED_EVAL_QUESTIONS_PATH,
     build_default_model_registry,
     build_eval_set_v1,
     build_retrieved_qa_chunk,
+    load_eval_questions_from_file,
     parse_model_json_response,
     retrieve_contexts_v1,
     run_qa_grounded_v1,
@@ -100,6 +102,45 @@ def _make_fake_rag_ready_v1(tmp_path: Path) -> Path:
     return rag_dir
 
 
+def _make_fake_rag_ready_v1_without_eval_questions(tmp_path: Path) -> Path:
+    rag_dir = tmp_path / "rag_ready_v1_no_eval"
+    _write_jsonl(rag_dir / "chunks_v1.jsonl", _tiny_chunks())
+    _write_json(
+        rag_dir / "rag_manifest_v1.json",
+        {
+            "manifest_version": "rag_manifest_v1",
+            "papers_count": 2,
+            "chunks_v1_count": 2,
+            "equations_count": 0,
+            "eval_questions_count": 0,
+            "quality_summary": {"chunks_with_quality_flags": 0, "quality_flag_counts": {}},
+        },
+    )
+    return rag_dir
+
+
+def _tiny_eval_questions_file(tmp_path: Path) -> Path:
+    path = tmp_path / "eval_questions.jsonl"
+    _write_jsonl(
+        path,
+        [
+            {
+                "question_id": "eval_file_q001",
+                "question": "Which method performs calorimeter shower simulation?",
+                "question_type": "method",
+                "expected_behavior": "answerable",
+                "expected_arxiv_ids": ["1705.00001v1"],
+                "expected_source_arxiv_ids": ["1705.00001v1"],
+                "expected_paper_ids": ["1705_00001v1"],
+                "expected_section_keywords": ["method", "simulation"],
+                "required_all_expected_sources": False,
+                "source": "test_eval_file",
+            }
+        ],
+    )
+    return path
+
+
 def test_model_registry_contains_required_generators() -> None:
     registry = build_default_model_registry()
     names = {model["model_name"] for model in registry["models"]}
@@ -111,52 +152,84 @@ def test_model_registry_contains_required_generators() -> None:
     assert all(model["enabled"] is True for model in registry["models"])
 
 
-def test_eval_set_v1_preserves_v0_and_adds_required_types() -> None:
+def test_eval_set_v1_preserves_v0_without_implicit_static_questions() -> None:
     eval_set = build_eval_set_v1(_tiny_questions_v0())
-    question_types = {question["question_type"] for question in eval_set}
     behaviors = {question["question_id"]: question["expected_behavior"] for question in eval_set}
 
-    assert [question["question_id"] for question in eval_set[:2]] == ["eval_v0_q001", "eval_v0_q008"]
-    assert len(eval_set) == 7
-    assert {"fact_lookup", "method", "limitation", "comparison", "no_answer"} <= question_types
+    assert [question["question_id"] for question in eval_set] == ["eval_v0_q001", "eval_v0_q008"]
+    assert len(eval_set) == 2
     assert behaviors["eval_v0_q008"] == "insufficient_evidence"
-    assert behaviors["eval_v1_q013"] == "insufficient_evidence"
 
 
-def test_eval_set_v1_is_deterministic_and_static_by_default() -> None:
-    first = build_eval_set_v1(
+def test_hardened_eval_set_file_has_expected_questions() -> None:
+    records = load_eval_questions_from_file(DEFAULT_HARDENED_EVAL_QUESTIONS_PATH)
+    question_ids = [record["question_id"] for record in records]
+
+    assert len(records) == 13
+    assert len(question_ids) == len(set(question_ids))
+    assert question_ids[:8] == [f"eval_v0_q{i:03d}" for i in range(1, 9)]
+    assert question_ids[8:] == [f"eval_v1_q{i:03d}" for i in range(9, 14)]
+    by_id = {record["question_id"]: record for record in records}
+    assert by_id["eval_v0_q008"]["expected_behavior"] == "insufficient_evidence"
+    assert by_id["eval_v1_q013"]["expected_behavior"] == "insufficient_evidence"
+    assert by_id["eval_v1_q012"]["required_all_expected_sources"] is True
+
+
+def test_no_operational_questions_are_hardcoded_in_qa_module() -> None:
+    source = Path("kamiknows/rag/qa_grounded_v1.py").read_text(encoding="utf-8")
+
+    assert "What named model is introduced" not in source
+    assert "How does the CaloGAN setup encourage" not in source
+    assert "What exact ATLAS Run 4 production deployment date" not in source
+    assert "first selected FastCalo paper" not in source
+
+
+def test_eval_set_v1_uses_eval_questions_file_only(tmp_path: Path) -> None:
+    eval_file = _tiny_eval_questions_file(tmp_path)
+
+    eval_set = build_eval_set_v1(
         _tiny_questions_v0(),
-        static_v1_questions_enabled=True,
-        llm_question_generation_enabled=False,
-    )
-    second = build_eval_set_v1(
-        _tiny_questions_v0(),
-        static_v1_questions_enabled=True,
-        llm_question_generation_enabled=False,
+        eval_questions_file=eval_file,
+        static_v1_questions_enabled=False,
     )
 
-    assert first == second
-    assert [question["source"] for question in first[-5:]] == [
-        "eval_questions_v1_extension",
-        "eval_questions_v1_extension",
-        "eval_questions_v1_extension",
-        "eval_questions_v1_extension",
-        "eval_questions_v1_extension",
-    ]
+    assert [question["question_id"] for question in eval_set] == ["eval_file_q001"]
+    assert eval_set[0]["source"] == "test_eval_file"
 
 
-def test_llm_question_generation_false_uses_static_questions_only() -> None:
+def test_legacy_static_questions_require_explicit_file(tmp_path: Path) -> None:
+    static_file = _tiny_eval_questions_file(tmp_path)
     eval_set = build_eval_set_v1(
         _tiny_questions_v0(),
         static_v1_questions_enabled=True,
+        static_v1_questions_path=static_file,
         llm_question_generation_enabled=False,
     )
 
-    assert len(eval_set) == 7
+    assert len(eval_set) == 3
     assert {question["source"] for question in eval_set} == {
         "eval_questions_v0",
-        "eval_questions_v1_extension",
+        "test_eval_file",
     }
+
+
+def test_legacy_static_questions_fail_without_explicit_file() -> None:
+    try:
+        build_eval_set_v1(_tiny_questions_v0(), static_v1_questions_enabled=True)
+    except ValueError as exc:
+        assert "static_v1_questions_path is required" in str(exc)
+    else:
+        raise AssertionError("legacy static questions must require an explicit data file")
+
+
+def test_load_eval_questions_from_file_fails_if_missing(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.jsonl"
+    try:
+        load_eval_questions_from_file(missing)
+    except Exception as exc:
+        assert "eval questions file does not exist" in str(exc)
+    else:
+        raise AssertionError("missing eval-question files must fail")
 
 
 def test_llm_question_generation_true_is_not_implemented() -> None:
@@ -166,6 +239,19 @@ def test_llm_question_generation_true_is_not_implemented() -> None:
         assert "LLM question generation is not implemented" in str(exc)
     else:
         raise AssertionError("LLM question generation must remain disabled in P2T4")
+
+
+def test_from_file_mode_does_not_call_deprecated_helper(tmp_path: Path, monkeypatch) -> None:
+    eval_file = _tiny_eval_questions_file(tmp_path)
+
+    def fail_if_called():
+        raise AssertionError("_additional_eval_questions_v1 must not be called")
+
+    monkeypatch.setattr("kamiknows.rag.qa_grounded_v1._additional_eval_questions_v1", fail_if_called)
+
+    eval_set = build_eval_set_v1([], eval_questions_file=eval_file)
+
+    assert [record["question_id"] for record in eval_set] == ["eval_file_q001"]
 
 
 def test_retrieval_records_have_deterministic_citation_labels() -> None:
@@ -210,6 +296,28 @@ def test_label_citation_validation_detects_valid_and_invented_labels() -> None:
     assert missing["status"] == "answered_without_valid_citation"
 
 
+def test_retrieval_required_all_expected_sources_for_comparison() -> None:
+    eval_set = [
+        {
+            "question_id": "eval_file_q_compare",
+            "question": "Compare CaloGAN and CaloFlow.",
+            "question_type": "comparison",
+            "expected_behavior": "answerable",
+            "expected_arxiv_ids": ["1705.00001v1", "2106.00001v1"],
+            "expected_paper_ids": ["1705_00001v1", "2106_00001v1"],
+            "expected_section_keywords": ["CaloGAN"],
+            "required_all_expected_sources": True,
+        }
+    ]
+
+    records = retrieve_contexts_v1(chunks=_tiny_chunks()[:1], eval_set=eval_set, top_k=1)
+
+    retrieval_eval = records[0]["retrieval_eval"]
+    assert retrieval_eval["expected_source_hit"] is False
+    assert retrieval_eval["required_all_expected_sources"] is True
+    assert retrieval_eval["missing_expected_source_ids"] == ["2106.00001v1"]
+
+
 def test_full_orchestration_writes_outputs_when_ollama_unavailable(tmp_path: Path, monkeypatch) -> None:
     rag_dir = _make_fake_rag_ready_v1(tmp_path)
     output_dir = tmp_path / "qa_grounded"
@@ -232,9 +340,9 @@ def test_full_orchestration_writes_outputs_when_ollama_unavailable(tmp_path: Pat
         top_k=2,
     )
 
-    assert result["eval_summary"]["questions_total"] == 7
+    assert result["eval_summary"]["questions_total"] == 2
     assert result["eval_summary"]["models_available"] == []
-    assert result["eval_summary"]["backend_errors"] == 7
+    assert result["eval_summary"]["backend_errors"] == 2
     assert (output_dir / "qa_model_registry_v1.json").exists()
     assert (output_dir / "rag_eval_set_v1.jsonl").exists()
     assert (output_dir / "retrieved_contexts_v1.jsonl").exists()
@@ -244,6 +352,41 @@ def test_full_orchestration_writes_outputs_when_ollama_unavailable(tmp_path: Pat
     assert (output_dir / "rag_model_comparison_v1.md").exists()
     assert (output_dir / "rag_error_analysis_v1.md").exists()
     assert report_path.exists()
+
+
+def test_full_orchestration_uses_eval_questions_file_when_provided(tmp_path: Path, monkeypatch) -> None:
+    rag_dir = _make_fake_rag_ready_v1_without_eval_questions(tmp_path)
+    eval_file = _tiny_eval_questions_file(tmp_path)
+    output_dir = tmp_path / "qa_grounded_from_file"
+    report_path = tmp_path / "phase2_task04_from_file.md"
+
+    def fake_tags(base_url: str, timeout_seconds: int = 5):
+        return {
+            "available": False,
+            "model_names": [],
+            "backend_error": "fake backend unavailable",
+        }
+
+    monkeypatch.setattr("kamiknows.rag.qa_grounded_v1.list_local_ollama_models", fake_tags)
+
+    result = run_qa_grounded_v1(
+        rag_ready_dir=rag_dir,
+        output_dir=output_dir,
+        report_path=report_path,
+        model_names=["qwen3:0.6b"],
+        top_k=2,
+        eval_set_mode="from_file",
+        eval_questions_file=eval_file,
+    )
+
+    assert result["eval_summary"]["questions_total"] == 1
+    assert result["dataset"]["counts"]["eval_questions_v0"] == 0
+    assert [record["question_id"] for record in result["eval_set"]] == ["eval_file_q001"]
+    run_config = json.loads((output_dir / "qa_run_config_v1.json").read_text(encoding="utf-8"))
+    manifest = json.loads((output_dir / "qa_manifest_v1.json").read_text(encoding="utf-8"))
+    assert run_config["eval_set"]["mode"] == "from_file"
+    assert run_config["eval_set"]["questions_file"] == str(eval_file)
+    assert manifest["eval_set"]["questions_file"] == str(eval_file)
 
 
 def test_load_canonical_config_json() -> None:
@@ -257,6 +400,9 @@ def test_load_canonical_config_json() -> None:
         "qwen3:4b-instruct",
         "mistral:7b",
     ]
+    assert config["eval_set"]["mode"] == "from_file"
+    assert config["eval_set"]["questions_file"] == "data/eval/rag_eval_set_v1_hardened.jsonl"
+    assert config["eval_set"]["static_v1_questions_enabled"] is False
     assert config["eval_set"]["llm_question_generation_enabled"] is False
     assert config["scope"]["no_training"] is True
     assert config["scope"]["no_discovery"] is True
@@ -284,7 +430,8 @@ def test_cli_overrides_config_values(tmp_path: Path) -> None:
             },
             "eval_set": {
                 "mode": "config_mode",
-                "static_v1_questions_enabled": True,
+                "questions_file": "from_config/questions.jsonl",
+                "static_v1_questions_enabled": False,
                 "llm_question_generation_enabled": False,
             },
         },
@@ -315,6 +462,8 @@ def test_cli_overrides_config_values(tmp_path: Path) -> None:
             "256",
             "--timeout-seconds",
             "45",
+            "--eval-questions-file",
+            "cli/questions.jsonl",
         ]
     )
     settings = resolve_run_settings(args)
@@ -330,6 +479,8 @@ def test_cli_overrides_config_values(tmp_path: Path) -> None:
     assert settings["num_predict"] == 256
     assert settings["timeout_seconds"] == 45
     assert settings["eval_set_mode"] == "config_mode"
+    assert settings["eval_questions_file"] == Path("cli/questions.jsonl")
+    assert settings["static_v1_questions_enabled"] is False
 
 
 def test_legacy_cli_without_config_still_resolves_required_paths() -> None:
@@ -348,3 +499,5 @@ def test_legacy_cli_without_config_still_resolves_required_paths() -> None:
     assert settings["top_k"] == 5
     assert settings["base_url"] == "http://localhost:11434"
     assert settings["model_names"] is None
+    assert settings["eval_questions_file"] is None
+    assert settings["static_v1_questions_enabled"] is False

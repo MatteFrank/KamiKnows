@@ -27,10 +27,11 @@
     "timeout_seconds": 120
   },
   "eval_set": {
-    "mode": "v0_plus_static_v1",
-    "static_v1_questions_enabled": true,
+    "mode": "from_file",
+    "questions_file": "data/eval/rag_eval_set_v1_hardened.jsonl",
+    "static_v1_questions_enabled": false,
     "llm_question_generation_enabled": false,
-    "notes": "The v1 extension questions are deterministic static records in kamiknows/rag/qa_grounded_v1.py::_additional_eval_questions_v1."
+    "notes": "The complete hardened eval set is loaded from data/eval/rag_eval_set_v1_hardened.jsonl. No questions are hard-coded in the QA runtime."
   },
   "citation_policy": {
     "deterministic_retrieval_labels_only": true,

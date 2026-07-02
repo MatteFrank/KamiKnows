@@ -49,6 +49,12 @@ python3 scripts/run_qa_grounded_v1.py \
   --config configs/phase2_p2t4_qa_grounded_v1.json
 ```
 
+The config loads the complete hardened eval set from:
+
+```text
+data/eval/rag_eval_set_v1_hardened.jsonl
+```
+
 The config command writes to
 `outputs/rag_v1_fastcalosim_qa_grounded_config_v1` by default so the completed
 P2T4 output directory is not overwritten.
@@ -61,6 +67,7 @@ python3 scripts/run_qa_grounded_v1.py \
   --output-dir outputs/rag_v1_fastcalosim_qa_grounded \
   --report-path docs/task_reports/phase2_task04_qa_grounded_v1.md \
   --top-k 5 \
+  --eval-questions-file data/eval/rag_eval_set_v1_hardened.jsonl \
   --models qwen3:0.6b qwen3:4b-instruct mistral:7b
 ```
 

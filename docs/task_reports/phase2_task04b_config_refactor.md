@@ -74,8 +74,7 @@ generation calls.
 The QA grounded v1 eval set is still deterministic and static:
 
 ```text
-outputs/rag_ready_fastcalo_v1/eval_questions_v0.jsonl
-+ kamiknows/rag/qa_grounded_v1.py::_additional_eval_questions_v1()
+data/eval/rag_eval_set_v1_hardened.jsonl
 ```
 
 No LLM generates questions today. The config field:
@@ -122,7 +121,7 @@ Focused tests were added for:
 - CLI override precedence over config values;
 - legacy CLI resolution without config;
 - updated default models;
-- deterministic static eval-set construction;
+- deterministic eval-set construction from data files;
 - disabled LLM question generation guardrail.
 
 Validation command:
@@ -139,7 +138,8 @@ Result:
 
 ## Limits
 
-- The v1 question extension remains hard-coded for now.
+- Superseded by P2T5b: operational RAG eval questions now live in
+  `data/eval/rag_eval_set_v1_hardened.jsonl`.
 - The config does not introduce LLM-generated questions.
 - The config does not change retrieval, citation validation, or answer
   generation logic.

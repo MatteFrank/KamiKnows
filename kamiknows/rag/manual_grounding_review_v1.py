@@ -609,7 +609,7 @@ def build_task05_report_markdown(
     output_lines = [f"- `{output_dir / filename}`" for filename in P2T5_OUTPUT_FILES.values()]
     output_lines.extend(
         [
-            "- `data/eval/rag_eval_questions_v1_static.jsonl`",
+            "- `data/eval/rag_eval_set_v1_hardened.jsonl`",
             "- `configs/phase2_p2t5_manual_review_v1.json`",
         ]
     )

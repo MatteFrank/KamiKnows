@@ -221,26 +221,26 @@ def test_manual_grounding_review_outputs_are_pending_and_traceable(tmp_path: Pat
     assert result["manual_review_summary"] == summary
 
 
-def test_build_eval_set_can_load_static_v1_questions_from_file(tmp_path: Path) -> None:
-    static_file = tmp_path / "static_questions.jsonl"
+def test_build_eval_set_can_load_questions_from_file(tmp_path: Path) -> None:
+    questions_file = tmp_path / "questions.jsonl"
     _write_jsonl(
-        static_file,
+        questions_file,
         [
             {
-                "question_id": "eval_v1_custom",
-                "question": "What is the static question?",
+                "question_id": "eval_file_custom",
+                "question": "What is the file-backed question?",
                 "question_type": "fact_lookup",
                 "expected_behavior": "answerable",
                 "expected_arxiv_ids": ["1111.00001v1"],
+                "source": "test_questions_file",
             }
         ],
     )
 
     eval_set = build_eval_set_v1(
-        [],
-        static_v1_questions_enabled=True,
-        static_v1_questions_path=static_file,
+        [{"question_id": "ignored", "question": "ignored", "question_type": "method"}],
+        eval_questions_file=questions_file,
     )
 
-    assert [record["question_id"] for record in eval_set] == ["eval_v1_custom"]
-    assert eval_set[0]["source"] == "eval_questions_v1_extension"
+    assert [record["question_id"] for record in eval_set] == ["eval_file_custom"]
+    assert eval_set[0]["source"] == "test_questions_file"

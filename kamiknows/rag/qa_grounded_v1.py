@@ -24,8 +24,8 @@ from kamiknows.run_metadata import utc_now_iso
 DEFAULT_MODEL_NAMES = ("qwen3:0.6b", "qwen3:4b-instruct", "mistral:7b")
 DEFAULT_TOP_K = 5
 DEFAULT_BASE_URL = "http://localhost:11434"
-DEFAULT_STATIC_V1_EVAL_QUESTIONS_PATH = (
-    Path(__file__).resolve().parents[2] / "data/eval/rag_eval_questions_v1_static.jsonl"
+DEFAULT_HARDENED_EVAL_QUESTIONS_PATH = (
+    Path(__file__).resolve().parents[2] / "data/eval/rag_eval_set_v1_hardened.jsonl"
 )
 
 QA_OUTPUT_FILES = {
@@ -47,7 +47,11 @@ VALID_CONFIDENCE = {"low", "medium", "high"}
 LABEL_RE = re.compile(r"\[?(C[1-9][0-9]*)\]?", flags=re.IGNORECASE)
 
 
-def load_rag_ready_v1_dataset(rag_ready_dir: Path) -> dict[str, Any]:
+def load_rag_ready_v1_dataset(
+    rag_ready_dir: Path,
+    *,
+    include_eval_questions_v0: bool = True,
+) -> dict[str, Any]:
     """Load the Phase 2 v1 RAG-ready dataset files."""
     rag_ready_dir = Path(rag_ready_dir)
     if not rag_ready_dir.exists():
@@ -55,15 +59,16 @@ def load_rag_ready_v1_dataset(rag_ready_dir: Path) -> dict[str, Any]:
 
     paths = {
         "chunks": rag_ready_dir / "chunks_v1.jsonl",
-        "eval_questions": rag_ready_dir / "eval_questions_v0.jsonl",
         "manifest": rag_ready_dir / "rag_manifest_v1.json",
     }
+    if include_eval_questions_v0:
+        paths["eval_questions"] = rag_ready_dir / "eval_questions_v0.jsonl"
     missing = [str(path) for path in paths.values() if not path.exists()]
     if missing:
         raise RagDatasetError("missing RAG-ready v1 file(s): " + ", ".join(missing))
 
     chunks = read_jsonl(paths["chunks"])
-    eval_questions = read_jsonl(paths["eval_questions"])
+    eval_questions = read_jsonl(paths["eval_questions"]) if include_eval_questions_v0 else []
     manifest = read_json(paths["manifest"])
     return {
         "rag_ready_dir": str(rag_ready_dir),
@@ -130,34 +135,65 @@ def build_default_model_registry(
 def build_eval_set_v1(
     eval_questions_v0: list[dict[str, Any]],
     *,
-    static_v1_questions_enabled: bool = True,
+    eval_questions_file: Path | str | None = None,
+    static_v1_questions_enabled: bool = False,
     llm_question_generation_enabled: bool = False,
     static_v1_questions_path: Path | str | None = None,
 ) -> list[dict[str, Any]]:
-    """Preserve v0 questions and optionally add the static v1 extension.
+    """Build the QA eval set from a canonical file or legacy v0 inputs.
 
     LLM-based question generation is intentionally not implemented for P2T4.
-    The v1 additions are deterministic records read from
-    ``data/eval/rag_eval_questions_v1_static.jsonl`` when available, with the
-    original in-code records retained as a backward-compatible fallback.
+    When ``eval_questions_file`` is provided, only that JSONL file is used.
+    The legacy v0-plus-static composition path is retained for explicit
+    compatibility only and requires a static question file.
     """
     if llm_question_generation_enabled:
         raise ValueError("LLM question generation is not implemented for QA grounded v1.")
+    if eval_questions_file is not None:
+        return load_eval_questions_from_file(eval_questions_file)
     records = [_normalize_eval_question_v0(question) for question in eval_questions_v0]
     if static_v1_questions_enabled:
+        if static_v1_questions_path is None:
+            raise ValueError(
+                "static_v1_questions_path is required when static_v1_questions_enabled is true; "
+                "no operational eval questions are hard-coded in QA grounded v1."
+            )
         records.extend(load_static_eval_questions_v1(static_v1_questions_path))
     return records
 
 
-def load_static_eval_questions_v1(path: Path | str | None = None) -> list[dict[str, Any]]:
-    """Load deterministic static v1 eval questions from data when present."""
-    static_path = Path(path) if path is not None else DEFAULT_STATIC_V1_EVAL_QUESTIONS_PATH
-    if not static_path.exists():
-        return _additional_eval_questions_v1()
-    records = read_jsonl(static_path)
-    for record in records:
-        record.setdefault("source", "eval_questions_v1_extension")
+def load_eval_questions_from_file(path: Path | str) -> list[dict[str, Any]]:
+    """Load and validate a JSONL eval-question file."""
+    questions_path = Path(path)
+    if not questions_path.exists():
+        raise RagDatasetError(f"eval questions file does not exist: {questions_path}")
+
+    records = read_jsonl(questions_path)
+    if not records:
+        raise RagDatasetError(f"eval questions file is empty: {questions_path}")
+
+    required_fields = ("question_id", "question", "question_type", "expected_behavior")
+    seen_ids: set[str] = set()
+    for index, record in enumerate(records, start=1):
+        for field in required_fields:
+            if not str(record.get(field) or "").strip():
+                raise RagDatasetError(
+                    f"{questions_path}:{index} missing required eval-question field: {field}"
+                )
+        question_id = str(record["question_id"])
+        if question_id in seen_ids:
+            raise RagDatasetError(
+                f"{questions_path}:{index} duplicate question_id: {question_id}"
+            )
+        seen_ids.add(question_id)
     return records
+
+
+def load_static_eval_questions_v1(path: Path | str | None = None) -> list[dict[str, Any]]:
+    """Load legacy static extension questions from an explicit data file."""
+    if path is None:
+        raise ValueError("static_v1_questions_path is required for legacy static eval loading")
+    return load_eval_questions_from_file(path)
 
 
 def build_eval_set_card_markdown(eval_set: list[dict[str, Any]]) -> str:
@@ -281,16 +317,16 @@ def evaluate_retrieval_for_question(
     retrieved_chunks: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Evaluate retrieved chunks against expected arXiv or paper IDs."""
-    expected_arxiv_ids = {
+    expected_arxiv_ids = [
         str(value)
         for value in _as_list(question.get("expected_arxiv_ids") or question.get("expected_source_arxiv_ids"))
         if value
-    }
-    expected_paper_ids = {
+    ]
+    expected_paper_ids = [
         str(value)
         for value in _as_list(question.get("expected_paper_ids") or question.get("expected_paper_id"))
         if value
-    }
+    ]
     has_expected = bool(expected_arxiv_ids or expected_paper_ids)
     if not has_expected:
         return {
@@ -300,21 +336,71 @@ def evaluate_retrieval_for_question(
             "notes": "No expected source identifier was specified.",
         }
 
+    required_all = bool(question.get("required_all_expected_sources"))
+    matched_identifiers: list[str] = []
+    hit_ranks: list[int] = []
     for chunk in retrieved_chunks:
-        if (
-            str(chunk.get("arxiv_id") or "") in expected_arxiv_ids
-            or str(chunk.get("paper_id") or "") in expected_paper_ids
-        ):
+        chunk_arxiv_id = str(chunk.get("arxiv_id") or "")
+        chunk_paper_id = str(chunk.get("paper_id") or "")
+        matched = []
+        if chunk_arxiv_id in expected_arxiv_ids:
+            matched.append(chunk_arxiv_id)
+        if chunk_paper_id in expected_paper_ids:
+            matched.append(chunk_paper_id)
+        if matched:
+            matched_identifiers.extend(matched)
+            hit_ranks.append(int(chunk.get("rank") or 0) or 0)
+        if matched and not required_all:
             return {
                 "has_expected_source": True,
                 "expected_source_hit": True,
                 "expected_source_hit_rank": int(chunk.get("rank") or 0) or None,
+                "required_all_expected_sources": False,
+                "matched_expected_source_ids": _unique_preserve_order(matched_identifiers),
+                "missing_expected_source_ids": [],
                 "notes": "At least one expected source identifier was retrieved.",
             }
+
+    if required_all:
+        expected_groups = [
+            [arxiv_id, str(arxiv_id).replace(".", "_")]
+            for arxiv_id in expected_arxiv_ids
+        ]
+        if not expected_groups:
+            expected_groups = [[paper_id] for paper_id in expected_paper_ids]
+        matched_set = set(matched_identifiers)
+        missing_groups = [
+            group[0]
+            for group in expected_groups
+            if not any(identifier in matched_set for identifier in group)
+        ]
+        if not missing_groups:
+            return {
+                "has_expected_source": True,
+                "expected_source_hit": True,
+                "expected_source_hit_rank": max(hit_ranks) if hit_ranks else None,
+                "required_all_expected_sources": True,
+                "matched_expected_source_ids": _unique_preserve_order(matched_identifiers),
+                "missing_expected_source_ids": [],
+                "notes": "All required expected source identifiers were retrieved.",
+            }
+        return {
+            "has_expected_source": True,
+            "expected_source_hit": False,
+            "expected_source_hit_rank": None,
+            "required_all_expected_sources": True,
+            "matched_expected_source_ids": _unique_preserve_order(matched_identifiers),
+            "missing_expected_source_ids": missing_groups,
+            "notes": "Not all required expected source identifiers were retrieved.",
+        }
+
     return {
         "has_expected_source": True,
         "expected_source_hit": False,
         "expected_source_hit_rank": None,
+        "required_all_expected_sources": False,
+        "matched_expected_source_ids": [],
+        "missing_expected_source_ids": _unique_preserve_order(expected_arxiv_ids or expected_paper_ids),
         "notes": "No retrieved chunk matched the expected source identifiers.",
     }
 
@@ -1084,6 +1170,7 @@ def build_task_report_markdown(
     output_dir: Path,
     dataset: dict[str, Any],
     eval_set: list[dict[str, Any]],
+    eval_questions_file: Path | str | None,
     registry: dict[str, Any],
     eval_summary: dict[str, Any],
     citation_summary: dict[str, Any],
@@ -1097,6 +1184,22 @@ def build_task_report_markdown(
         model for model in per_model if int(model.get("backend_errors") or 0) > 0
     ]
     retrieval_misses = eval_summary.get("retrieval_miss_question_ids", [])
+    input_files = [
+        str(Path(rag_ready_dir) / "chunks_v1.jsonl"),
+        str(Path(rag_ready_dir) / "rag_manifest_v1.json"),
+    ]
+    if eval_questions_file is not None:
+        input_files.append(str(eval_questions_file))
+    else:
+        input_files.append(str(Path(rag_ready_dir) / "eval_questions_v0.jsonl"))
+
+    question_source_lines = [
+        f"- Complete eval questions are loaded from `{eval_questions_file}`."
+        if eval_questions_file is not None
+        else "- Eval questions are built from `outputs/rag_ready_fastcalo_v1/eval_questions_v0.jsonl` plus any explicitly configured static question file.",
+        "- No operational eval questions are hard-coded in the QA runtime.",
+        "- No LLM generates questions in QA grounded v1.",
+    ]
     lines = [
         "# Phase 2 Task 04 - QA Grounded v1",
         "",
@@ -1111,9 +1214,7 @@ def build_task_report_markdown(
         "## Inputs Used",
         "",
         "```text",
-        str(Path(rag_ready_dir) / "chunks_v1.jsonl"),
-        str(Path(rag_ready_dir) / "eval_questions_v0.jsonl"),
-        str(Path(rag_ready_dir) / "rag_manifest_v1.json"),
+        *input_files,
         "```",
         "",
         "The existing `outputs/rag_ready_fastcalo_v0/` and `outputs/rag_ready_fastcalo_v1/` directories were not overwritten.",
@@ -1167,9 +1268,7 @@ def build_task_report_markdown(
         "",
         "Question source:",
         "",
-        "- v0 questions are loaded from `outputs/rag_ready_fastcalo_v1/eval_questions_v0.jsonl`.",
-        "- v1 extension questions are static records from `kamiknows/rag/qa_grounded_v1.py::_additional_eval_questions_v1()`.",
-        "- No LLM generates questions in QA grounded v1.",
+        *question_source_lines,
         "",
         "## Top-k",
         "",
@@ -1255,6 +1354,7 @@ def build_run_config(
     base_url: str,
     registry: dict[str, Any],
     eval_set_mode: str,
+    eval_questions_file: Path | str | None,
     static_v1_questions_enabled: bool,
     static_v1_questions_path: Path | str | None,
     llm_question_generation_enabled: bool,
@@ -1274,14 +1374,18 @@ def build_run_config(
         "models": registry.get("models", []),
         "eval_set": {
             "mode": eval_set_mode,
+            "questions_file": str(eval_questions_file) if eval_questions_file is not None else None,
             "static_v1_questions_enabled": static_v1_questions_enabled,
             "static_v1_questions_path": (
                 str(static_v1_questions_path)
                 if static_v1_questions_path is not None
-                else str(DEFAULT_STATIC_V1_EVAL_QUESTIONS_PATH)
+                else None
             ),
             "llm_question_generation_enabled": llm_question_generation_enabled,
-            "notes": "v1 questions are deterministic static records; no LLM question generation is performed.",
+            "notes": (
+                "The complete hardened eval set is loaded from a data file when questions_file "
+                "is set. No operational questions are hard-coded in the QA runtime."
+            ),
         },
         "scope": "QA grounded v1; no training, no discovery, no parser changes, no scientific reliability claim",
     }
@@ -1293,6 +1397,8 @@ def build_manifest(
     output_dir: Path,
     dataset: dict[str, Any],
     registry: dict[str, Any],
+    eval_set_mode: str,
+    eval_questions_file: Path | str | None,
 ) -> dict[str, Any]:
     """Build QA v1 output manifest."""
     files = {
@@ -1310,6 +1416,10 @@ def build_manifest(
         "source_rag_ready_dir": str(rag_ready_dir),
         "output_dir": str(output_dir),
         "dataset_counts": dataset["counts"],
+        "eval_set": {
+            "mode": eval_set_mode,
+            "questions_file": str(eval_questions_file) if eval_questions_file is not None else None,
+        },
         "files": files,
         "validation": {
             "status": "PASS" if not missing else "FAIL",
@@ -1336,14 +1446,21 @@ def run_qa_grounded_v1(
     num_predict: int = 512,
     timeout_seconds: int = 120,
     eval_set_mode: str = "v0_plus_static_v1",
-    static_v1_questions_enabled: bool = True,
+    eval_questions_file: Path | str | None = None,
+    static_v1_questions_enabled: bool = False,
     static_v1_questions_path: Path | str | None = None,
     llm_question_generation_enabled: bool = False,
 ) -> dict[str, Any]:
     """Run the full QA grounded v1 task and write requested artifacts."""
     if top_k < 1:
         raise ValueError("top_k must be >= 1")
-    dataset = load_rag_ready_v1_dataset(rag_ready_dir)
+    if eval_set_mode == "from_file" and eval_questions_file is None:
+        raise ValueError("eval_set mode 'from_file' requires eval_questions_file/questions_file")
+    use_eval_questions_file = eval_questions_file is not None
+    dataset = load_rag_ready_v1_dataset(
+        rag_ready_dir,
+        include_eval_questions_v0=not use_eval_questions_file,
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     registry = build_default_model_registry(
@@ -1356,7 +1473,8 @@ def run_qa_grounded_v1(
     write_json(output_dir / QA_OUTPUT_FILES["qa_model_registry"], registry)
 
     eval_set = build_eval_set_v1(
-        dataset["eval_questions_v0"],
+        [] if use_eval_questions_file else dataset["eval_questions_v0"],
+        eval_questions_file=eval_questions_file,
         static_v1_questions_enabled=static_v1_questions_enabled,
         static_v1_questions_path=static_v1_questions_path,
         llm_question_generation_enabled=llm_question_generation_enabled,
@@ -1426,6 +1544,7 @@ def run_qa_grounded_v1(
             base_url=base_url,
             registry=registry,
             eval_set_mode=eval_set_mode,
+            eval_questions_file=eval_questions_file,
             static_v1_questions_enabled=static_v1_questions_enabled,
             static_v1_questions_path=static_v1_questions_path,
             llm_question_generation_enabled=llm_question_generation_enabled,
@@ -1436,6 +1555,8 @@ def run_qa_grounded_v1(
         output_dir=output_dir,
         dataset=dataset,
         registry=registry,
+        eval_set_mode=eval_set_mode,
+        eval_questions_file=eval_questions_file,
     )
     write_json(output_dir / QA_OUTPUT_FILES["qa_manifest"], manifest)
 
@@ -1446,6 +1567,7 @@ def run_qa_grounded_v1(
             output_dir=output_dir,
             dataset=dataset,
             eval_set=eval_set,
+            eval_questions_file=eval_questions_file,
             registry=registry,
             eval_summary=eval_summary,
             citation_summary=citation_summary,
@@ -1489,68 +1611,13 @@ def _normalize_eval_question_v0(question: dict[str, Any]) -> dict[str, Any]:
 
 
 def _additional_eval_questions_v1() -> list[dict[str, Any]]:
-    return [
-        {
-            "question_id": "eval_v1_q009",
-            "question": "What named model is introduced for high-fidelity fast simulation of particle showers in electromagnetic calorimeters?",
-            "question_type": "fact_lookup",
-            "expected_arxiv_ids": ["1705.02355v2"],
-            "expected_source_arxiv_ids": ["1705.02355v2"],
-            "expected_paper_ids": ["1705_02355v2"],
-            "expected_behavior": "answerable",
-            "expected_section_keywords": ["CaloGAN", "high-fidelity", "fast simulation", "electromagnetic calorimeters"],
-            "notes": "Fact lookup question added for QA grounded v1.",
-            "source": "eval_questions_v1_extension",
-        },
-        {
-            "question_id": "eval_v1_q010",
-            "question": "How does the CaloGAN setup encourage generated showers to match a given nominal energy?",
-            "question_type": "method",
-            "expected_arxiv_ids": ["1705.02355v2"],
-            "expected_source_arxiv_ids": ["1705.02355v2"],
-            "expected_paper_ids": ["1705_02355v2"],
-            "expected_behavior": "answerable",
-            "expected_section_keywords": ["nominal energy", "physics-specific loss", "reconstructed energy", "energy conservation"],
-            "notes": "Method question targeting energy-conditioning evidence.",
-            "source": "eval_questions_v1_extension",
-        },
-        {
-            "question_id": "eval_v1_q011",
-            "question": "What limitation is stated about using one-dimensional shower shape statistics to validate CaloGAN?",
-            "question_type": "limitation",
-            "expected_arxiv_ids": ["1705.02355v2"],
-            "expected_source_arxiv_ids": ["1705.02355v2"],
-            "expected_paper_ids": ["1705_02355v2"],
-            "expected_behavior": "answerable",
-            "expected_section_keywords": ["shower shape", "1D statistics", "correlations", "higher dimensional", "challenge"],
-            "notes": "Limitation question targeting validation caveats.",
-            "source": "eval_questions_v1_extension",
-        },
-        {
-            "question_id": "eval_v1_q012",
-            "question": "Compare CaloGAN's GAN-based calorimeter simulation approach with CaloFlow's stated advantages of normalizing flows.",
-            "question_type": "comparison",
-            "expected_arxiv_ids": ["1705.02355v2", "2106.05285v3"],
-            "expected_source_arxiv_ids": ["1705.02355v2", "2106.05285v3"],
-            "expected_paper_ids": ["1705_02355v2", "2106_05285v3"],
-            "expected_behavior": "answerable",
-            "expected_section_keywords": ["CaloGAN", "GAN", "normalizing flows", "likelihood", "stable training", "model selection"],
-            "notes": "Comparison question requiring evidence from two retrieved papers if available.",
-            "source": "eval_questions_v1_extension",
-        },
-        {
-            "question_id": "eval_v1_q013",
-            "question": "What exact ATLAS Run 4 production deployment date and detector-wide replacement policy do these chunks recommend?",
-            "question_type": "no_answer",
-            "expected_arxiv_ids": [],
-            "expected_source_arxiv_ids": [],
-            "expected_paper_ids": [],
-            "expected_behavior": "insufficient_evidence",
-            "expected_section_keywords": ["production", "deployment", "ATLAS Run 4", "replacement policy"],
-            "notes": "No-answer question; the pipeline should abstain unless retrieved chunks explicitly support the requested exact policy.",
-            "source": "eval_questions_v1_extension",
-        },
-    ]
+    """Deprecated compatibility helper.
+
+    Operational eval questions live in data/eval/rag_eval_set_v1_hardened.jsonl.
+    This helper intentionally contains no question text and is not used by the
+    QA runtime.
+    """
+    return []
 
 
 def _comparison_sentence(per_model: list[dict[str, Any]]) -> str:
@@ -1641,6 +1708,18 @@ def _as_list(value: Any) -> list[Any]:
     if isinstance(value, list):
         return value
     return [value]
+
+
+def _unique_preserve_order(values: list[Any]) -> list[str]:
+    seen = set()
+    unique: list[str] = []
+    for value in values:
+        text = str(value)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        unique.append(text)
+    return unique
 
 
 def _dedupe(values: list[Any]) -> list[Any]:

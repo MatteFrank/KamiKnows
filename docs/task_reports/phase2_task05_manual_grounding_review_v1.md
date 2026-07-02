@@ -32,7 +32,7 @@ QA output directory: `outputs/rag_v1_fastcalosim_qa_grounded_config_v1`
 - `outputs/rag_v1_fastcalosim_manual_review/rag_eval_set_v1_hardened_draft.jsonl`
 - `outputs/rag_v1_fastcalosim_manual_review/rag_eval_set_hardening_notes_v1.md`
 - `outputs/rag_v1_fastcalosim_manual_review/manual_review_summary_v1.json`
-- `data/eval/rag_eval_questions_v1_static.jsonl`
+- `data/eval/rag_eval_set_v1_hardened.jsonl`
 - `configs/phase2_p2t5_manual_review_v1.json`
 - `docs/task_reports/phase2_task05_manual_grounding_review_v1.md`
 
@@ -84,7 +84,7 @@ QA output directory: `outputs/rag_v1_fastcalosim_qa_grounded_config_v1`
 ## Config Notes
 
 - Review schema options: `{"manual_abstention_behavior": ["pass", "partial", "fail", "pending"], "manual_answer_correctness": ["pass", "partial", "fail", "pending"], "manual_citation_support": ["pass", "partial", "fail", "pending"], "manual_grounding": ["pass", "partial", "fail", "pending"], "severity": ["none", "minor", "major", "critical", "pending"]}`
-- Hardening settings: `{"do_not_change_ground_truth_automatically": true, "flag_ambiguous_wording": true, "flag_multi_source_questions": true, "flag_no_answer_questions": true, "highlight_retrieval_misses": ["eval_v0_q002", "eval_v0_q005"], "llm_as_final_judge_enabled": false, "llm_question_generation_enabled": false, "preserve_original_question_ids": true, "write_static_v1_questions_file": "data/eval/rag_eval_questions_v1_static.jsonl"}`
+- Hardening settings: `{"canonical_hardened_eval_set_file": "data/eval/rag_eval_set_v1_hardened.jsonl", "do_not_change_ground_truth_automatically": true, "flag_ambiguous_wording": true, "flag_multi_source_questions": true, "flag_no_answer_questions": true, "highlight_retrieval_misses": ["eval_v0_q002", "eval_v0_q005"], "llm_as_final_judge_enabled": false, "llm_question_generation_enabled": false, "preserve_original_question_ids": true}`
 
 ## Limits
 

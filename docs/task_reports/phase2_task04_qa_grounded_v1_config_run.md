@@ -56,7 +56,7 @@ Models with generation backend errors:
 Question source:
 
 - v0 questions are loaded from `outputs/rag_ready_fastcalo_v1/eval_questions_v0.jsonl`.
-- v1 extension questions are static records from `kamiknows/rag/qa_grounded_v1.py::_additional_eval_questions_v1()`.
+- Superseded by P2T5b: operational RAG eval questions now load from `data/eval/rag_eval_set_v1_hardened.jsonl`.
 - No LLM generates questions in QA grounded v1.
 
 ## Top-k
