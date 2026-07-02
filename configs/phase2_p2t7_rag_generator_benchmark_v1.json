@@ -1,0 +1,64 @@
+{
+  "config_version": "phase2_p2t7_rag_generator_benchmark_v1",
+  "project": "KnowKami / M-Fond LLM",
+  "task": "Phase 2 Task 07 - RAG Generator and Configuration Benchmark v1",
+  "input": {
+    "rag_ready_dir": "outputs/rag_ready_fastcalo_v1",
+    "eval_questions_file": "data/eval/rag_eval_set_v1_hardened.jsonl",
+    "reranking_output_dir": "outputs/rag_v1_fastcalosim_reranking_light_v1"
+  },
+  "output": {
+    "output_dir": "outputs/rag_v1_fastcalosim_generator_benchmark_v1",
+    "report_path": "docs/task_reports/phase2_task07_rag_generator_benchmark_v1.md"
+  },
+  "contexts": {
+    "include_tfidf_baseline": true,
+    "include_light_reranked": true,
+    "fallback_to_tfidf_if_reranking_missing": true,
+    "top_k": 5
+  },
+  "prompt_profiles": [
+    {
+      "name": "grounded_json_v1",
+      "description": "P2T4 citation-constrained JSON prompt."
+    },
+    {
+      "name": "strict_abstention_v2",
+      "description": "More conservative prompt for missing or incomplete evidence."
+    }
+  ],
+  "answer_generation": {
+    "backend": "ollama",
+    "base_url": "http://localhost:11434",
+    "models": [
+      "qwen3:0.6b",
+      "qwen3:4b-instruct",
+      "mistral:7b"
+    ],
+    "parameter_sets": [
+      {
+        "name": "deterministic_512",
+        "temperature": 0.0,
+        "top_p": 0.9,
+        "num_predict": 512,
+        "timeout_seconds": 180
+      }
+    ]
+  },
+  "evaluation": {
+    "use_expected_sources_posthoc_only": true,
+    "llm_judge_enabled": false,
+    "manual_review_required": true
+  },
+  "scope": {
+    "phase": "Phase 2 - robust scientific RAG",
+    "no_training": true,
+    "no_lora": true,
+    "no_qlora": true,
+    "no_discovery": true,
+    "no_corpus_scaling": true,
+    "no_parser_changes": true,
+    "no_llm_judge": true,
+    "scientific_reliability_claim": false
+  }
+}
