@@ -21,9 +21,12 @@ from kamiknows.rag.outputs import write_json, write_jsonl
 from kamiknows.rag.retriever_v1 import TfidfRetrieverV1
 from kamiknows.run_metadata import utc_now_iso
 
-DEFAULT_MODEL_NAMES = ("qwen3:0.6b", "qwen3:4b", "mistral:7b")
+DEFAULT_MODEL_NAMES = ("qwen3:0.6b", "qwen3:4b-instruct", "mistral:7b")
 DEFAULT_TOP_K = 5
 DEFAULT_BASE_URL = "http://localhost:11434"
+DEFAULT_STATIC_V1_EVAL_QUESTIONS_PATH = (
+    Path(__file__).resolve().parents[2] / "data/eval/rag_eval_questions_v1_static.jsonl"
+)
 
 QA_OUTPUT_FILES = {
     "qa_model_registry": "qa_model_registry_v1.json",
@@ -124,10 +127,36 @@ def build_default_model_registry(
     }
 
 
-def build_eval_set_v1(eval_questions_v0: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Preserve the 8 v0 questions and add a lightweight v1 extension."""
+def build_eval_set_v1(
+    eval_questions_v0: list[dict[str, Any]],
+    *,
+    static_v1_questions_enabled: bool = True,
+    llm_question_generation_enabled: bool = False,
+    static_v1_questions_path: Path | str | None = None,
+) -> list[dict[str, Any]]:
+    """Preserve v0 questions and optionally add the static v1 extension.
+
+    LLM-based question generation is intentionally not implemented for P2T4.
+    The v1 additions are deterministic records read from
+    ``data/eval/rag_eval_questions_v1_static.jsonl`` when available, with the
+    original in-code records retained as a backward-compatible fallback.
+    """
+    if llm_question_generation_enabled:
+        raise ValueError("LLM question generation is not implemented for QA grounded v1.")
     records = [_normalize_eval_question_v0(question) for question in eval_questions_v0]
-    records.extend(_additional_eval_questions_v1())
+    if static_v1_questions_enabled:
+        records.extend(load_static_eval_questions_v1(static_v1_questions_path))
+    return records
+
+
+def load_static_eval_questions_v1(path: Path | str | None = None) -> list[dict[str, Any]]:
+    """Load deterministic static v1 eval questions from data when present."""
+    static_path = Path(path) if path is not None else DEFAULT_STATIC_V1_EVAL_QUESTIONS_PATH
+    if not static_path.exists():
+        return _additional_eval_questions_v1()
+    records = read_jsonl(static_path)
+    for record in records:
+        record.setdefault("source", "eval_questions_v1_extension")
     return records
 
 
@@ -1136,6 +1165,12 @@ def build_task_report_markdown(
         f"- Insufficient-evidence questions: {sum(1 for q in eval_set if q.get('expected_behavior') == 'insufficient_evidence')}",
         "- Includes fact lookup, method, limitation, comparison, and no-answer/insufficient-evidence questions.",
         "",
+        "Question source:",
+        "",
+        "- v0 questions are loaded from `outputs/rag_ready_fastcalo_v1/eval_questions_v0.jsonl`.",
+        "- v1 extension questions are static records from `kamiknows/rag/qa_grounded_v1.py::_additional_eval_questions_v1()`.",
+        "- No LLM generates questions in QA grounded v1.",
+        "",
         "## Top-k",
         "",
         f"`top_k={eval_summary['top_k']}` using `{eval_summary['retriever']['name']}`.",
@@ -1219,6 +1254,10 @@ def build_run_config(
     top_k: int,
     base_url: str,
     registry: dict[str, Any],
+    eval_set_mode: str,
+    static_v1_questions_enabled: bool,
+    static_v1_questions_path: Path | str | None,
+    llm_question_generation_enabled: bool,
 ) -> dict[str, Any]:
     """Build run config for traceability."""
     return {
@@ -1233,6 +1272,17 @@ def build_run_config(
             "version": TfidfRetrieverV1.version,
         },
         "models": registry.get("models", []),
+        "eval_set": {
+            "mode": eval_set_mode,
+            "static_v1_questions_enabled": static_v1_questions_enabled,
+            "static_v1_questions_path": (
+                str(static_v1_questions_path)
+                if static_v1_questions_path is not None
+                else str(DEFAULT_STATIC_V1_EVAL_QUESTIONS_PATH)
+            ),
+            "llm_question_generation_enabled": llm_question_generation_enabled,
+            "notes": "v1 questions are deterministic static records; no LLM question generation is performed.",
+        },
         "scope": "QA grounded v1; no training, no discovery, no parser changes, no scientific reliability claim",
     }
 
@@ -1285,6 +1335,10 @@ def run_qa_grounded_v1(
     top_p: float = 0.9,
     num_predict: int = 512,
     timeout_seconds: int = 120,
+    eval_set_mode: str = "v0_plus_static_v1",
+    static_v1_questions_enabled: bool = True,
+    static_v1_questions_path: Path | str | None = None,
+    llm_question_generation_enabled: bool = False,
 ) -> dict[str, Any]:
     """Run the full QA grounded v1 task and write requested artifacts."""
     if top_k < 1:
@@ -1301,7 +1355,12 @@ def run_qa_grounded_v1(
     registry = annotate_registry_availability(registry=registry, base_url=base_url)
     write_json(output_dir / QA_OUTPUT_FILES["qa_model_registry"], registry)
 
-    eval_set = build_eval_set_v1(dataset["eval_questions_v0"])
+    eval_set = build_eval_set_v1(
+        dataset["eval_questions_v0"],
+        static_v1_questions_enabled=static_v1_questions_enabled,
+        static_v1_questions_path=static_v1_questions_path,
+        llm_question_generation_enabled=llm_question_generation_enabled,
+    )
     write_jsonl(output_dir / QA_OUTPUT_FILES["rag_eval_set"], eval_set)
     (output_dir / QA_OUTPUT_FILES["rag_eval_set_card"]).write_text(
         build_eval_set_card_markdown(eval_set),
@@ -1366,6 +1425,10 @@ def run_qa_grounded_v1(
             top_k=top_k,
             base_url=base_url,
             registry=registry,
+            eval_set_mode=eval_set_mode,
+            static_v1_questions_enabled=static_v1_questions_enabled,
+            static_v1_questions_path=static_v1_questions_path,
+            llm_question_generation_enabled=llm_question_generation_enabled,
         ),
     )
     manifest = build_manifest(
@@ -1495,7 +1558,7 @@ def _comparison_sentence(per_model: list[dict[str, Any]]) -> str:
     if not available:
         return (
             "No configured generator was available through local Ollama in this run, so qwen3:0.6b, "
-            "qwen3:4b, and mistral:7b are compared only by availability/error records."
+            "qwen3:4b-instruct, and mistral:7b are compared only by availability/error records."
         )
     names = ", ".join(model["model_name"] for model in available)
     return (

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from kamiknows.rag.qa_grounded_v1 import (
+    DEFAULT_MODEL_NAMES,
     build_default_model_registry,
     build_eval_set_v1,
     build_retrieved_qa_chunk,
@@ -14,6 +15,7 @@ from kamiknows.rag.qa_grounded_v1 import (
     run_qa_grounded_v1,
     validate_answer_citations,
 )
+from scripts.run_qa_grounded_v1 import load_qa_grounded_config, parse_args, resolve_run_settings
 
 
 def _write_json(path: Path, data) -> None:
@@ -102,7 +104,9 @@ def test_model_registry_contains_required_generators() -> None:
     registry = build_default_model_registry()
     names = {model["model_name"] for model in registry["models"]}
 
-    assert {"qwen3:0.6b", "qwen3:4b", "mistral:7b"} <= names
+    assert DEFAULT_MODEL_NAMES == ("qwen3:0.6b", "qwen3:4b-instruct", "mistral:7b")
+    assert {"qwen3:0.6b", "qwen3:4b-instruct", "mistral:7b"} <= names
+    assert "qwen3:4b" not in names
     assert all(model["backend"] == "ollama" for model in registry["models"])
     assert all(model["enabled"] is True for model in registry["models"])
 
@@ -117,6 +121,51 @@ def test_eval_set_v1_preserves_v0_and_adds_required_types() -> None:
     assert {"fact_lookup", "method", "limitation", "comparison", "no_answer"} <= question_types
     assert behaviors["eval_v0_q008"] == "insufficient_evidence"
     assert behaviors["eval_v1_q013"] == "insufficient_evidence"
+
+
+def test_eval_set_v1_is_deterministic_and_static_by_default() -> None:
+    first = build_eval_set_v1(
+        _tiny_questions_v0(),
+        static_v1_questions_enabled=True,
+        llm_question_generation_enabled=False,
+    )
+    second = build_eval_set_v1(
+        _tiny_questions_v0(),
+        static_v1_questions_enabled=True,
+        llm_question_generation_enabled=False,
+    )
+
+    assert first == second
+    assert [question["source"] for question in first[-5:]] == [
+        "eval_questions_v1_extension",
+        "eval_questions_v1_extension",
+        "eval_questions_v1_extension",
+        "eval_questions_v1_extension",
+        "eval_questions_v1_extension",
+    ]
+
+
+def test_llm_question_generation_false_uses_static_questions_only() -> None:
+    eval_set = build_eval_set_v1(
+        _tiny_questions_v0(),
+        static_v1_questions_enabled=True,
+        llm_question_generation_enabled=False,
+    )
+
+    assert len(eval_set) == 7
+    assert {question["source"] for question in eval_set} == {
+        "eval_questions_v0",
+        "eval_questions_v1_extension",
+    }
+
+
+def test_llm_question_generation_true_is_not_implemented() -> None:
+    try:
+        build_eval_set_v1(_tiny_questions_v0(), llm_question_generation_enabled=True)
+    except ValueError as exc:
+        assert "LLM question generation is not implemented" in str(exc)
+    else:
+        raise AssertionError("LLM question generation must remain disabled in P2T4")
 
 
 def test_retrieval_records_have_deterministic_citation_labels() -> None:
@@ -195,3 +244,107 @@ def test_full_orchestration_writes_outputs_when_ollama_unavailable(tmp_path: Pat
     assert (output_dir / "rag_model_comparison_v1.md").exists()
     assert (output_dir / "rag_error_analysis_v1.md").exists()
     assert report_path.exists()
+
+
+def test_load_canonical_config_json() -> None:
+    config = load_qa_grounded_config(Path("configs/phase2_p2t4_qa_grounded_v1.json"))
+
+    assert config["input"]["rag_ready_dir"] == "outputs/rag_ready_fastcalo_v1"
+    assert config["output"]["output_dir"] == "outputs/rag_v1_fastcalosim_qa_grounded_config_v1"
+    assert config["retrieval"]["top_k"] == 5
+    assert config["answer_generation"]["models"] == [
+        "qwen3:0.6b",
+        "qwen3:4b-instruct",
+        "mistral:7b",
+    ]
+    assert config["eval_set"]["llm_question_generation_enabled"] is False
+    assert config["scope"]["no_training"] is True
+    assert config["scope"]["no_discovery"] is True
+    assert config["scope"]["no_corpus_scaling"] is True
+
+
+def test_cli_overrides_config_values(tmp_path: Path) -> None:
+    config_path = tmp_path / "qa_config.json"
+    _write_json(
+        config_path,
+        {
+            "input": {"rag_ready_dir": "from_config/rag"},
+            "output": {
+                "output_dir": "from_config/output",
+                "report_path": "from_config/report.md",
+            },
+            "retrieval": {"top_k": 3},
+            "answer_generation": {
+                "base_url": "http://config.example",
+                "models": ["config:model"],
+                "temperature": 0.2,
+                "top_p": 0.5,
+                "num_predict": 128,
+                "timeout_seconds": 30,
+            },
+            "eval_set": {
+                "mode": "config_mode",
+                "static_v1_questions_enabled": True,
+                "llm_question_generation_enabled": False,
+            },
+        },
+    )
+
+    args = parse_args(
+        [
+            "--config",
+            str(config_path),
+            "--rag-ready-dir",
+            "cli/rag",
+            "--output-dir",
+            "cli/output",
+            "--report-path",
+            "cli/report.md",
+            "--top-k",
+            "9",
+            "--base-url",
+            "http://cli.example",
+            "--models",
+            "cli:model:a",
+            "cli:model:b",
+            "--temperature",
+            "0.0",
+            "--top-p",
+            "0.95",
+            "--num-predict",
+            "256",
+            "--timeout-seconds",
+            "45",
+        ]
+    )
+    settings = resolve_run_settings(args)
+
+    assert settings["rag_ready_dir"] == Path("cli/rag")
+    assert settings["output_dir"] == Path("cli/output")
+    assert settings["report_path"] == Path("cli/report.md")
+    assert settings["top_k"] == 9
+    assert settings["base_url"] == "http://cli.example"
+    assert settings["model_names"] == ["cli:model:a", "cli:model:b"]
+    assert settings["temperature"] == 0.0
+    assert settings["top_p"] == 0.95
+    assert settings["num_predict"] == 256
+    assert settings["timeout_seconds"] == 45
+    assert settings["eval_set_mode"] == "config_mode"
+
+
+def test_legacy_cli_without_config_still_resolves_required_paths() -> None:
+    args = parse_args(
+        [
+            "--rag-ready-dir",
+            "outputs/rag_ready_fastcalo_v1",
+            "--output-dir",
+            "outputs/tmp_qa",
+        ]
+    )
+    settings = resolve_run_settings(args)
+
+    assert settings["rag_ready_dir"] == Path("outputs/rag_ready_fastcalo_v1")
+    assert settings["output_dir"] == Path("outputs/tmp_qa")
+    assert settings["top_k"] == 5
+    assert settings["base_url"] == "http://localhost:11434"
+    assert settings["model_names"] is None

@@ -8,7 +8,7 @@ robust scientific RAG over a small FastCaloSimulation corpus.
 
 Phase 2 is in progress: robust scientific RAG.
 
-Canonical Phase 2 state before accepting P2T4 as complete:
+Canonical Phase 2 state:
 
 - P2T1 completed: retrieval baseline v1 plus citation hardening.
 - P2T2 completed: embedding model selection as pipeline validation only.
@@ -16,7 +16,9 @@ Canonical Phase 2 state before accepting P2T4 as complete:
   candidates used the deterministic hash fallback and must not be reported as
   a real semantic model comparison.
 - P2T3 completed: chunking and metadata v1.
-- Next planned task: P2T4 QA grounded v1.
+- P2T4 completed: QA grounded v1.
+- P2T4b completed: JSON config refactor for QA grounded v1 defaults.
+- Current next practical step: manual grounding review of P2T4 answers.
 
 ## Non-Negotiable Constraints
 
@@ -120,7 +122,20 @@ python3 scripts/run_embedding_model_selection_v1.py \
   --top-k 5
 ```
 
-Planned P2T4 QA grounded v1 command:
+Config-based P2T4 QA grounded v1 command:
+
+```bash
+python3 scripts/run_qa_grounded_v1.py \
+  --config configs/phase2_p2t4_qa_grounded_v1.json
+```
+
+The config command writes to a new output directory by default:
+
+```text
+outputs/rag_v1_fastcalosim_qa_grounded_config_v1
+```
+
+Equivalent explicit P2T4 QA grounded v1 command:
 
 ```bash
 python3 scripts/run_qa_grounded_v1.py \
@@ -128,7 +143,7 @@ python3 scripts/run_qa_grounded_v1.py \
   --output-dir outputs/rag_v1_fastcalosim_qa_grounded \
   --report-path docs/task_reports/phase2_task04_qa_grounded_v1.md \
   --top-k 5 \
-  --models qwen3:0.6b qwen3:4b mistral:7b
+  --models qwen3:0.6b qwen3:4b-instruct mistral:7b
 ```
 
 Run tests:

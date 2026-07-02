@@ -13,10 +13,12 @@ Completed Phase 2 tasks:
 - P2T1: retrieval baseline v1 plus citation hardening.
 - P2T2: embedding model selection v1 as pipeline validation only.
 - P2T3: chunking and metadata v1.
-
-Next planned task:
-
 - P2T4: QA grounded v1.
+- P2T4b: QA grounded v1 JSON config refactor.
+
+Next practical task:
+
+- Manual grounding review of P2T4 generated answers.
 
 ## Current Dataset
 
@@ -75,6 +77,28 @@ docs/chunk_schema_v1.md
 docs/task_reports/phase2_task03_chunking_metadata_v1.md
 ```
 
+P2T4 QA grounded artifacts:
+
+```text
+outputs/rag_v1_fastcalosim_qa_grounded/
+docs/task_reports/phase2_task04_qa_grounded_v1.md
+```
+
+P2T4b config refactor artifacts:
+
+```text
+configs/phase2_p2t4_qa_grounded_v1.json
+docs/task_reports/phase2_task04b_config_refactor.md
+```
+
+The P2T4b config default output directory is:
+
+```text
+outputs/rag_v1_fastcalosim_qa_grounded_config_v1
+```
+
+This is intentionally separate from the completed P2T4 output directory.
+
 ## Known Metrics
 
 Retrieval smoke test over `chunks_v1`:
@@ -98,6 +122,23 @@ P2T3 quality summary:
 - chunks with quality flags: 31
 - flag counts: `{"very_long_text": 31}`
 
+P2T4 QA grounded summary:
+
+- total questions: 13
+- retriever: `tfidf_local_v1`
+- top_k: 5
+- expected-source hit rate: 0.833
+- misses: `eval_v0_q002`, `eval_v0_q005`
+- qwen3:0.6b: 11 answered, 2 insufficient, 0 backend errors
+- qwen3:4b: 13 backend-error records in the completed run
+- mistral:7b: 12 answered, 1 insufficient, 0 backend errors
+- invalid citation records: 0
+- invented citation labels: 0
+
+P2T4b default model update:
+
+- default middle model is now `qwen3:4b-instruct`, not `qwen3:4b`.
+
 ## Known Limits
 
 - The corpus is intentionally small and fixed.
@@ -109,18 +150,15 @@ P2T3 quality summary:
   prove factual entailment.
 - Manual review remains required before any scientific reliability claim.
 
-## Next Task: P2T4 QA Grounded v1
+## Current Next Step
 
 Goal:
 
-- Build a QA grounded RAG loop over `chunks_v1`.
-- Use deterministic citation labels tied to retrieved chunks.
-- Compare configured local Ollama generators if available:
-  `qwen3:0.6b`, `qwen3:4b`, and `mistral:7b`.
-- Record backend errors or unavailable models without failing the whole run.
-- Produce Markdown reporting in `docs/task_reports/`.
+- Review generated P2T4 answers manually for grounding and scientific quality.
+- Decide whether to rerun QA grounded v1 in a new output directory with
+  `qwen3:4b-instruct`.
 
 Non-claims:
 
-- P2T4 should test citation-constrained answer generation.
+- P2T4 tests citation-constrained answer generation.
 - P2T4 must not be presented as proof of scientific reliability.

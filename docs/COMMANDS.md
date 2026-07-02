@@ -42,13 +42,26 @@ not a semantic embedding comparison.
 
 ## QA Grounded v1
 
+Config-based canonical command:
+
+```bash
+python3 scripts/run_qa_grounded_v1.py \
+  --config configs/phase2_p2t4_qa_grounded_v1.json
+```
+
+The config command writes to
+`outputs/rag_v1_fastcalosim_qa_grounded_config_v1` by default so the completed
+P2T4 output directory is not overwritten.
+
+Equivalent explicit command:
+
 ```bash
 python3 scripts/run_qa_grounded_v1.py \
   --rag-ready-dir outputs/rag_ready_fastcalo_v1 \
   --output-dir outputs/rag_v1_fastcalosim_qa_grounded \
   --report-path docs/task_reports/phase2_task04_qa_grounded_v1.md \
   --top-k 5 \
-  --models qwen3:0.6b qwen3:4b mistral:7b
+  --models qwen3:0.6b qwen3:4b-instruct mistral:7b
 ```
 
 This command requires local Ollama access for generation. Missing models or

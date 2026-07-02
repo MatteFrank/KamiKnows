@@ -1,0 +1,56 @@
+{
+  "config_version": "phase2_p2t4_qa_grounded_v1",
+  "project": "KnowKami / M-Fond LLM",
+  "task": "Phase 2 Task 04 - QA grounded v1",
+  "input": {
+    "rag_ready_dir": "outputs/rag_ready_fastcalo_v1"
+  },
+  "output": {
+    "output_dir": "outputs/rag_v1_fastcalosim_qa_grounded_config_v1",
+    "report_path": "docs/task_reports/phase2_task04_qa_grounded_v1_config_run.md"
+  },
+  "retrieval": {
+    "retriever": "tfidf_local_v1",
+    "top_k": 5
+  },
+  "answer_generation": {
+    "backend": "ollama",
+    "base_url": "http://localhost:11434",
+    "models": [
+      "qwen3:0.6b",
+      "qwen3:4b-instruct",
+      "mistral:7b"
+    ],
+    "temperature": 0.0,
+    "top_p": 0.9,
+    "num_predict": 512,
+    "timeout_seconds": 120
+  },
+  "eval_set": {
+    "mode": "v0_plus_static_v1",
+    "static_v1_questions_enabled": true,
+    "llm_question_generation_enabled": false,
+    "notes": "The v1 extension questions are deterministic static records in kamiknows/rag/qa_grounded_v1.py::_additional_eval_questions_v1."
+  },
+  "citation_policy": {
+    "deterministic_retrieval_labels_only": true,
+    "allowed_label_format": "[C1], [C2], ...",
+    "model_must_not_invent_sources": true,
+    "answered_requires_valid_citation": true,
+    "insufficient_evidence_may_have_zero_citations": true,
+    "validation_scope": "Validate citation labels against retrieved chunks; do not claim factual entailment or scientific reliability."
+  },
+  "scope": {
+    "phase": "Phase 2 - robust scientific RAG",
+    "no_training": true,
+    "no_lora": true,
+    "no_qlora": true,
+    "no_discovery": true,
+    "no_corpus_scaling": true,
+    "no_parser_changes": true,
+    "do_not_overwrite_rag_ready_v0": true,
+    "do_not_overwrite_rag_ready_v1": true,
+    "manual_review_required": true,
+    "scientific_reliability_claim": false
+  }
+}
