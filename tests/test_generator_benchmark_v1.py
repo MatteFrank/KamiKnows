@@ -9,13 +9,19 @@ from kamiknows.rag.generator_benchmark_v1 import (
     build_abstention_analysis,
     build_benchmark_citation_validation_summary,
     build_benchmark_matrix,
+    build_citation_failure_audit,
     build_prompt,
     build_recommended_config,
+    classify_citation_failure,
+    extract_used_citation_labels_from_record,
+    filter_benchmark_configs,
+    filter_eval_questions,
     load_benchmark_contexts,
     run_rag_generator_benchmark_v1,
+    validate_context_label_mapping,
 )
 from kamiknows.rag.qa_grounded_v1 import parse_model_json_response, validate_answer_citations
-from scripts.run_rag_generator_benchmark_v1 import parse_args, resolve_run_settings
+from scripts.run_rag_generator_benchmark_v1 import build_dry_run_matrix, parse_args, resolve_run_settings
 
 
 def _write_json(path: Path, data) -> None:
@@ -178,6 +184,8 @@ def test_prompt_builders() -> None:
     assert "Return only valid JSON" in grounded
     assert "required_all_expected_sources" in strict
     assert "expected_arxiv_ids" not in strict
+    assert 'For answer_status="answered", citations must contain at least one valid citation_id' in grounded
+    assert 'For answer_status="answered", citations must contain at least one valid citation_id' in strict
 
 
 def test_json_parsing_fallback_and_citation_validation() -> None:
@@ -190,6 +198,116 @@ def test_json_parsing_fallback_and_citation_validation() -> None:
 
     assert "json_parse_error" in parsed["parse_warnings"]
     assert validation["status"] == "valid"
+
+
+def test_citation_extraction_ignores_embedded_uuid_fragments() -> None:
+    parsed = parse_model_json_response('{"id": "5d62ecf2-b0af-4c98-a9c8-beba3c7190e4"}')
+
+    assert parsed["citations"] == []
+
+
+def test_citation_failure_classifier_citations_in_text_but_not_array() -> None:
+    record = {
+        **_tiny_context(),
+        "benchmark_config_id": "cfg_test",
+        "model_name": "tiny:model",
+        "prompt_profile": "grounded_json_v1",
+        "context_source": "tfidf_baseline_top5",
+        "answer_status": "answered",
+        "answer": "CaloGAN uses a GAN [C1].",
+        "evidence": "",
+        "limitations": "",
+        "citations": [],
+        "unsupported_or_inferred": [],
+        "parse_warnings": [],
+        "citation_validation": {
+            "valid": True,
+            "valid_used_citation_labels": ["C1"],
+            "invented_citation_labels": [],
+            "answered_without_valid_citation": False,
+        },
+    }
+
+    assert extract_used_citation_labels_from_record(record)["all"] == ["C1"]
+    assert classify_citation_failure(record) == "citations_in_text_but_not_array"
+
+
+def test_citation_failure_audit_answered_without_valid_and_invented() -> None:
+    no_citation_record = {
+        **_tiny_context(),
+        "benchmark_config_id": "cfg_no_cite",
+        "model_name": "tiny:model",
+        "prompt_profile": "grounded_json_v1",
+        "context_source": "tfidf_baseline_top5",
+        "answer_status": "answered",
+        "answer": "CaloGAN uses a GAN.",
+        "evidence": "",
+        "limitations": "",
+        "citations": [],
+        "unsupported_or_inferred": [],
+        "raw_model_response": "",
+        "parse_warnings": [],
+        "citation_validation": {
+            "status": "answered_without_valid_citation",
+            "valid": False,
+            "valid_used_citation_labels": [],
+            "invented_citation_labels": [],
+            "answered_without_valid_citation": True,
+        },
+    }
+    invented_record = {
+        **no_citation_record,
+        "benchmark_config_id": "cfg_invented",
+        "citations": ["C9"],
+        "citation_validation": {
+            "status": "invented_citation",
+            "valid": False,
+            "valid_used_citation_labels": [],
+            "invented_citation_labels": ["C9"],
+            "answered_without_valid_citation": False,
+        },
+    }
+
+    audit = build_citation_failure_audit([no_citation_record, invented_record])
+
+    assert audit[0]["suspected_failure_cause"] == "model_returned_empty_citations_array"
+    assert audit[0]["answered_without_valid_citation"] is True
+    assert audit[1]["suspected_failure_cause"] == "citation_label_not_in_context"
+    assert audit[1]["invented_citation_labels"] == ["C9"]
+
+
+def test_context_label_mapping_for_reranked_contexts() -> None:
+    record = {
+        **_tiny_context(),
+        "context_source": "light_reranked_top5",
+        "retrieved_chunks": [
+            {**_tiny_context()["retrieved_chunks"][0], "rank": 1, "citation_id": "C1", "citation_label": "[C1]"},
+            {
+                **_tiny_context()["retrieved_chunks"][0],
+                "rank": 2,
+                "citation_id": "C2",
+                "citation_label": "[C2]",
+                "chunk_id": "chunk_other",
+            },
+        ],
+    }
+
+    summary = validate_context_label_mapping([record])
+
+    assert summary["status"] == "valid"
+    assert summary["issue_count"] == 0
+
+
+def test_reduced_selection_helpers() -> None:
+    questions = filter_eval_questions(_tiny_questions(), question_ids=["q002"], limit_questions=1)
+    configs = filter_benchmark_configs(
+        [{"config_id": "cfg_001"}, {"config_id": "cfg_002"}, {"config_id": "cfg_003"}],
+        config_ids=["cfg_001", "cfg_003"],
+        limit_configs=1,
+    )
+
+    assert [question["question_id"] for question in questions] == ["q002"]
+    assert [config["config_id"] for config in configs] == ["cfg_001"]
 
 
 def test_abstention_analysis_and_recommended_config() -> None:
@@ -324,6 +442,16 @@ def test_cli_config_and_override(tmp_path: Path) -> None:
             "strict_abstention_v2",
             "--context-sources",
             "tfidf_baseline_top5",
+            "--limit-questions",
+            "2",
+            "--limit-configs",
+            "1",
+            "--question-ids",
+            "q001",
+            "q002",
+            "--config-ids",
+            "cfg_001__tfidf_baseline_top5__strict_abstention_v2__cli_model__deterministic_512",
+            "--dry-run-matrix",
             "--base-url",
             "http://cli",
             "--timeout-seconds",
@@ -338,5 +466,14 @@ def test_cli_config_and_override(tmp_path: Path) -> None:
     assert settings["model_names"] == ["cli:model"]
     assert settings["prompt_profiles"] == [{"name": "strict_abstention_v2", "description": ""}]
     assert settings["context_sources"] == ["tfidf_baseline_top5"]
+    assert settings["limit_questions"] == 2
+    assert settings["limit_configs"] == 1
+    assert settings["question_ids"] == ["q001", "q002"]
+    assert settings["config_ids"] == ["cfg_001__tfidf_baseline_top5__strict_abstention_v2__cli_model__deterministic_512"]
+    assert settings["dry_run_matrix"] is True
     assert settings["base_url"] == "http://cli"
     assert settings["timeout_seconds_override"] == 3
+
+    matrix = build_dry_run_matrix(settings)
+    assert matrix["selection"]["dry_run_matrix"] is True
+    assert len(matrix["configs"]) == 1

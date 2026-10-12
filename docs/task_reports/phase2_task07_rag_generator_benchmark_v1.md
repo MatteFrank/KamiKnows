@@ -43,13 +43,13 @@ P2T4 established grounded QA generation, P2T5 prepared manual review, and P2T6 c
 ## Automatic Results
 
 - Answer records: 156
-- Backend errors: 156
-- Citation invalid records: 0
-- Invented citations: 0
-- Answered without valid citation: 0
-- Correct abstentions: 0
-- Failed abstentions / possible overclaims: 0
-- Over-abstentions: 0
+- Backend errors: 0
+- Citation invalid records: 34
+- Invented citations: 3
+- Answered without valid citation: 34
+- Correct abstentions: 23
+- Failed abstentions / possible overclaims: 1
+- Over-abstentions: 32
 
 ## Recommended Config For Manual Review
 
@@ -84,8 +84,8 @@ Use the recommended config only to prioritize manual grounding review, then comp
 
 ## Top Structural Configs
 
-- `cfg_001__tfidf_baseline_top5__grounded_json_v1__qwen3_0_6b__deterministic_512`: answered=0, insufficient=0, backend_errors=13, invalid_citations=0
-- `cfg_002__tfidf_baseline_top5__grounded_json_v1__qwen3_4b_instruct__deterministic_512`: answered=0, insufficient=0, backend_errors=13, invalid_citations=0
-- `cfg_003__tfidf_baseline_top5__grounded_json_v1__mistral_7b__deterministic_512`: answered=0, insufficient=0, backend_errors=13, invalid_citations=0
-- `cfg_004__tfidf_baseline_top5__strict_abstention_v2__qwen3_0_6b__deterministic_512`: answered=0, insufficient=0, backend_errors=13, invalid_citations=0
-- `cfg_005__tfidf_baseline_top5__strict_abstention_v2__qwen3_4b_instruct__deterministic_512`: answered=0, insufficient=0, backend_errors=13, invalid_citations=0
+- `cfg_010__light_reranked_top5__strict_abstention_v2__qwen3_0_6b__deterministic_512`: answered=3, insufficient=10, backend_errors=0, invalid_citations=1
+- `cfg_007__light_reranked_top5__grounded_json_v1__qwen3_0_6b__deterministic_512`: answered=11, insufficient=2, backend_errors=0, invalid_citations=2
+- `cfg_009__light_reranked_top5__grounded_json_v1__mistral_7b__deterministic_512`: answered=11, insufficient=2, backend_errors=0, invalid_citations=2
+- `cfg_011__light_reranked_top5__strict_abstention_v2__qwen3_4b_instruct__deterministic_512`: answered=6, insufficient=7, backend_errors=0, invalid_citations=2
+- `cfg_005__tfidf_baseline_top5__strict_abstention_v2__qwen3_4b_instruct__deterministic_512`: answered=5, insufficient=8, backend_errors=0, invalid_citations=2

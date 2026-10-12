@@ -12,7 +12,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from kamiknows.rag.generator_benchmark_v1 import run_rag_generator_benchmark_v1
+from kamiknows.rag.generator_benchmark_v1 import (
+    build_benchmark_matrix,
+    filter_benchmark_configs,
+    run_rag_generator_benchmark_v1,
+)
 from kamiknows.rag.load_dataset import RagDatasetError
 
 DEFAULT_CONFIG_PATH = Path("configs/phase2_p2t7_rag_generator_benchmark_v1.json")
@@ -31,6 +35,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--models", nargs="+", default=None)
     parser.add_argument("--prompt-profiles", nargs="+", default=None)
     parser.add_argument("--context-sources", nargs="+", default=None)
+    parser.add_argument("--limit-questions", type=int, default=None)
+    parser.add_argument("--limit-configs", type=int, default=None)
+    parser.add_argument("--question-ids", nargs="+", default=None)
+    parser.add_argument("--config-ids", nargs="+", default=None)
+    parser.add_argument("--dry-run-matrix", action="store_true")
     parser.add_argument("--base-url", default=None)
     parser.add_argument("--timeout-seconds", type=int, default=None)
     return parser.parse_args(argv)
@@ -85,13 +94,54 @@ def resolve_run_settings(args: argparse.Namespace) -> dict[str, Any]:
         "base_url": args.base_url or str(generation_config.get("base_url") or "http://localhost:11434"),
         "timeout_seconds_override": args.timeout_seconds,
         "context_sources": args.context_sources,
+        "limit_questions": args.limit_questions,
+        "limit_configs": args.limit_configs,
+        "question_ids": args.question_ids,
+        "config_ids": args.config_ids,
+        "dry_run_matrix": bool(args.dry_run_matrix),
     }
+
+
+def build_dry_run_matrix(settings: dict[str, Any]) -> dict[str, Any]:
+    """Build the selected matrix without loading contexts or calling models."""
+    context_sources = settings.get("context_sources")
+    if not context_sources:
+        context_sources = []
+        if settings.get("include_tfidf_baseline"):
+            context_sources.append("tfidf_baseline_top5")
+        if settings.get("include_light_reranked"):
+            context_sources.append("light_reranked_top5")
+    matrix = build_benchmark_matrix(
+        context_sources=list(context_sources),
+        prompt_profiles=list(settings.get("prompt_profiles") or []),
+        model_names=list(settings.get("model_names") or []),
+        parameter_sets=list(settings.get("parameter_sets") or []),
+        backend=str(settings.get("backend") or "ollama"),
+        top_k=int(settings.get("top_k") or 5),
+    )
+    matrix["configs"] = filter_benchmark_configs(
+        matrix["configs"],
+        config_ids=settings.get("config_ids"),
+        limit_configs=settings.get("limit_configs"),
+    )
+    matrix["selection"] = {
+        "question_ids": list(settings.get("question_ids") or []),
+        "limit_questions": settings.get("limit_questions"),
+        "config_ids": list(settings.get("config_ids") or []),
+        "limit_configs": settings.get("limit_configs"),
+        "dry_run_matrix": True,
+    }
+    return matrix
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         settings = resolve_run_settings(args)
+        if settings.get("dry_run_matrix"):
+            matrix = build_dry_run_matrix(settings)
+            print(json.dumps(matrix, indent=2, sort_keys=True))
+            return 0
         _require_settings(settings)
         result = run_rag_generator_benchmark_v1(**settings)
     except (OSError, RagDatasetError, ValueError, json.JSONDecodeError) as exc:
