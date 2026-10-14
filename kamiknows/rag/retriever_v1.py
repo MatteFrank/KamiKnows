@@ -160,6 +160,7 @@ class TfidfRetrieverV1:
         top_k: int = 5,
         question_type: str = "",
         expected_section_keywords: list[str] | None = None,
+        candidate_indices: list[int] | None = None,
     ) -> list[RetrievedChunkV1]:
         """Return top-k chunks with cosine similarity scores."""
         if top_k < 1:
@@ -173,7 +174,13 @@ class TfidfRetrieverV1:
         query_norm = _norm(query_vector)
 
         scored: list[tuple[float, str, int, dict[str, Any]]] = []
-        for index, chunk in enumerate(self.chunks):
+        indices = list(range(len(self.chunks))) if candidate_indices is None else candidate_indices
+        if len(set(indices)) != len(indices) or any(
+            not isinstance(i, int) or isinstance(i, bool) or not 0 <= i < len(self.chunks) for i in indices
+        ):
+            raise ValueError("invalid candidate indices")
+        for index in indices:
+            chunk = self.chunks[index]
             score = _cosine(query_vector, query_norm, self._doc_vectors[index], self._doc_norms[index])
             scored.append((score, str(chunk.get("chunk_id") or ""), index, chunk))
 

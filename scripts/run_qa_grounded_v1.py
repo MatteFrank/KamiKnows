@@ -58,6 +58,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=f"Canonical eval-question JSONL file. Default in config: {DEFAULT_HARDENED_EVAL_QUESTIONS_PATH}.",
     )
+    parser.add_argument("--retrieval-results-file", type=Path, default=None,
+                        help="Reuse validated comparison retrieval JSONL instead of running TF-IDF.")
+    parser.add_argument("--source-policy", choices=["none", "explicit_arxiv"], default=None,
+                        help="Source policy; with saved retrieval, omitted means inherit its manifest.")
     parser.add_argument("--static-v1-questions-path", type=Path, default=None)
     return parser.parse_args(argv)
 
@@ -117,6 +121,8 @@ def resolve_run_settings(args: argparse.Namespace) -> dict[str, Any]:
             or _path_value(eval_config.get("questions_file"))
             or _path_value(eval_config.get("eval_questions_file"))
         ),
+        "retrieval_results_file": args.retrieval_results_file,
+        "source_policy": args.source_policy or retrieval_config.get("source_policy"),
         "static_v1_questions_enabled": _resolve_bool(
             eval_config.get("static_v1_questions_enabled"),
             False,
@@ -137,6 +143,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = resolve_run_settings(args)
         result = run_qa_grounded_v1(
+            retrieval_results_file=settings["retrieval_results_file"],
+            source_policy=settings["source_policy"],
             rag_ready_dir=settings["rag_ready_dir"],
             output_dir=settings["output_dir"],
             report_path=settings["report_path"],

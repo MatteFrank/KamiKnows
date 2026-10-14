@@ -11,9 +11,9 @@ QA grounded v1 tests citation-constrained answer generation, but does not prove 
 ## Inputs Used
 
 ```text
-outputs/rag_ready_fastcalo_v1/chunks_v1.jsonl
-outputs/rag_ready_fastcalo_v1/eval_questions_v0.jsonl
-outputs/rag_ready_fastcalo_v1/rag_manifest_v1.json
+outputs/rag_ready_fastcalo_v1_enriched/chunks_v1.jsonl
+outputs/rag_ready_fastcalo_v1_enriched/rag_manifest_v1.json
+data/eval/rag_eval_set_v1_hardened.jsonl
 ```
 
 The existing `outputs/rag_ready_fastcalo_v0/` and `outputs/rag_ready_fastcalo_v1/` directories were not overwritten.
@@ -23,20 +23,16 @@ The existing `outputs/rag_ready_fastcalo_v0/` and `outputs/rag_ready_fastcalo_v1
 - Papers: 5
 - Chunks: 108
 - Equations: 28
-- v0 eval questions imported: 8
+- v0 eval questions imported: 0
 - Known chunk quality flags: {"chunks_with_quality_flags": 31, "quality_flag_counts": {"very_long_text": 31}}
 
 ## Models Configured
 
 - qwen3:0.6b
-- qwen3:4b
-- mistral:7b
 
 ## Models Effectively Available
 
 - qwen3:0.6b
-- qwen3:4b
-- mistral:7b
 
 Unavailable models:
 
@@ -44,7 +40,7 @@ Unavailable models:
 
 Models with generation backend errors:
 
-- qwen3:4b: 13 backend-error records
+- qwen3:0.6b: 1 backend-error records
 
 ## Eval Set Used
 
@@ -53,40 +49,44 @@ Models with generation backend errors:
 - Insufficient-evidence questions: 2
 - Includes fact lookup, method, limitation, comparison, and no-answer/insufficient-evidence questions.
 
+Question source:
+
+- Complete eval questions are loaded from `data/eval/rag_eval_set_v1_hardened.jsonl`.
+- No operational eval questions are hard-coded in the QA runtime.
+- No LLM generates questions in QA grounded v1.
+
 ## Top-k
 
 `top_k=5` using `tfidf_local_v1`.
 
 ## Summary Retrieval
 
-- Expected-source hit rate: 0.833
-- Expected-source hits: 10 / 12
-- Retrieval misses: eval_v0_q002, eval_v0_q005
+- Expected-source hit rate: 0.727
+- Expected-source hits: 8 / 11
+- Retrieval misses: eval_v0_q002, eval_v0_q005, eval_v1_q012
 
 ## Summary QA Per Model
 
 | Model | Availability | Answered | Insufficient | Backend errors | Invalid citations |
 | --- | --- | ---: | ---: | ---: | ---: |
-| qwen3:0.6b | available | 11 | 2 | 0 | 0 |
-| qwen3:4b | available | 0 | 0 | 13 | 0 |
-| mistral:7b | available | 12 | 1 | 0 | 0 |
+| qwen3:0.6b | available | 10 | 2 | 1 | 3 |
 
 ## Citation Validation
 
-- Invalid citation records: 0
+- Invalid citation records: 3
 - Invented citation labels: 0
-- Answered without valid citation: 0
-- Status counts: `{"insufficient_evidence_no_citation": 1, "not_applicable_backend_error": 13, "valid": 25}`
+- Answered without valid citation: 3
+- Status counts: `{"answered_without_valid_citation": 3, "not_applicable_backend_error": 1, "valid": 9}`
 
 ## Principal Failure Cases
 
-- Retrieval misses: eval_v0_q002, eval_v0_q005
-- Backend/model availability warnings: `{"backend_error": 13, "invalid_confidence_normalized": 1, "json_parse_error": 2}`
+- Retrieval misses: eval_v0_q002, eval_v0_q005, eval_v1_q012
+- Backend/model availability warnings: `{"answered_without_valid_citation": 3, "backend_error": 1, "json_parse_error": 4}`
 - Manual grounding review remains pending for all generated answers.
 
 ## Model Comparison
 
-Available local generators in this run: qwen3:0.6b, qwen3:4b, mistral:7b. See `rag_model_comparison_v1.md` for citation and abstention metrics.
+Available local generators in this run: qwen3:0.6b. See `rag_model_comparison_v1.md` for citation and abstention metrics.
 
 ## Improvements Compared To Mini-RAG v0
 
@@ -116,4 +116,4 @@ Run manual review on generated answers for available models, then address the re
 
 ## Output Directory
 
-`outputs/rag_v1_fastcalosim_qa_grounded`
+`outputs/qa_grounded_qwen06b_test`

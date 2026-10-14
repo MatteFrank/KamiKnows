@@ -1,6 +1,6 @@
 # Phase 2 Task 06 - Light Reranking v1
 
-Date: 2026-07-02
+Date: 2026-10-07
 
 ## Objective
 
@@ -17,8 +17,8 @@ Light reranking can improve ordering of already retrieved candidates, but it can
 
 ## Inputs Used
 
-- `outputs/rag_ready_fastcalo_v1/chunks_v1.jsonl`
-- `outputs/rag_ready_fastcalo_v1/rag_manifest_v1.json`
+- `outputs/rag_ready_fastcalo_v1_enriched/chunks_v1.jsonl`
+- `outputs/rag_ready_fastcalo_v1_enriched/rag_manifest_v1.json`
 - `data/eval/rag_eval_set_v1_hardened.jsonl`
 
 ## Outputs Produced

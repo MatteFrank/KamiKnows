@@ -241,25 +241,30 @@ def retrieve_contexts_v1(
     chunks: list[dict[str, Any]],
     eval_set: list[dict[str, Any]],
     top_k: int = DEFAULT_TOP_K,
+    source_policy: str = "none",
 ) -> list[dict[str, Any]]:
     """Retrieve deterministic contexts with C1/C2/... citation labels."""
     if top_k < 1:
         raise ValueError("top_k must be >= 1")
     retriever = TfidfRetrieverV1(chunks)
+    from kamiknows.rag.source_constraints import plan_source_constraints, select_balanced_results
     records = []
     for question in eval_set:
         question_text = str(question.get("question") or "")
         question_type = str(question.get("question_type") or "")
         expected_keywords = [str(value) for value in question.get("expected_section_keywords", []) or []]
+        indices, ids, diagnostics = plan_source_constraints(chunks, question_text, top_k, source_policy)
         retrieved = [
             build_retrieved_qa_chunk(chunk=item.chunk, rank=item.rank, score=item.score)
             for item in retriever.retrieve(
                 question_text,
-                top_k=top_k,
+                top_k=max(1, len(indices)) if ids else top_k,
                 question_type=question_type,
                 expected_section_keywords=expected_keywords,
+                candidate_indices=indices,
             )
         ]
+        retrieved = select_balanced_results(retrieved, ids, top_k) if indices else []
         records.append(
             {
                 "question_id": question.get("question_id", ""),
@@ -274,6 +279,7 @@ def retrieve_contexts_v1(
                     "version": TfidfRetrieverV1.version,
                 },
                 "retrieved_chunks": retrieved,
+                "source_constraint": diagnostics,
                 "retrieval_eval": evaluate_retrieval_for_question(
                     question=question,
                     retrieved_chunks=retrieved,
@@ -426,6 +432,15 @@ def build_grounded_qa_prompt_v1(context_record: dict[str, Any]) -> str:
             )
         )
     context_text = "\n\n".join(blocks) if blocks else "<NO_CONTEXT>"
+    constraint = context_record.get("source_constraint", {})
+    source_instruction = ""
+    if constraint.get("source_policy") == "explicit_arxiv" and constraint.get("requested_arxiv_ids"):
+        source_instruction = (
+            "\nRequested sources: " + ", ".join(constraint["requested_arxiv_ids"]) +
+            ". Attribute each claim to its source; comparisons must distinguish each paper.\n"
+        )
+        if constraint.get("status") != "available":
+            source_instruction += "Requested evidence is unavailable or source budget is insufficient. Set answer_status to insufficient_evidence.\n"
     return f"""You are KamiKnows, a citation-constrained scientific QA assistant.
 
 Use only the retrieved context below. Do not use outside knowledge.
@@ -434,6 +449,7 @@ Do not invent citation labels, chunk IDs, arXiv IDs, titles, or sources.
 If the context does not support the answer, set answer_status to "insufficient_evidence".
 Every factual claim in answer must include one or more labels like [C1].
 Keep the answer concise and technical.
+{source_instruction}
 
 Return only valid JSON with this exact shape:
 {{
@@ -1436,6 +1452,8 @@ def build_manifest(
 def run_qa_grounded_v1(
     *,
     rag_ready_dir: Path,
+    retrieval_results_file: Path | None = None,
+    source_policy: str | None = None,
     output_dir: Path,
     report_path: Path,
     model_names: list[str] | None = None,
@@ -1454,6 +1472,8 @@ def run_qa_grounded_v1(
     """Run the full QA grounded v1 task and write requested artifacts."""
     if top_k < 1:
         raise ValueError("top_k must be >= 1")
+    if source_policy not in {None, "none", "explicit_arxiv"}:
+        raise ValueError("invalid source policy")
     if eval_set_mode == "from_file" and eval_questions_file is None:
         raise ValueError("eval_set mode 'from_file' requires eval_questions_file/questions_file")
     use_eval_questions_file = eval_questions_file is not None
@@ -1461,6 +1481,27 @@ def run_qa_grounded_v1(
         rag_ready_dir,
         include_eval_questions_v0=not use_eval_questions_file,
     )
+    eval_set = build_eval_set_v1(
+        [] if use_eval_questions_file else dataset["eval_questions_v0"],
+        eval_questions_file=eval_questions_file,
+        static_v1_questions_enabled=static_v1_questions_enabled,
+        static_v1_questions_path=static_v1_questions_path,
+        llm_question_generation_enabled=llm_question_generation_enabled,
+    )
+    retrieval_provenance = None
+    if retrieval_results_file is not None:
+        from kamiknows.rag.saved_retrieval import load_saved_contexts
+        retrieved_contexts, retrieval_provenance = load_saved_contexts(
+            retrieval_results_file, dataset=dataset, eval_set=eval_set,
+            questions_file=eval_questions_file, top_k=top_k, source_policy=source_policy)
+        source_policy = retrieval_provenance['source_policy']
+    else:
+        retrieved_contexts = retrieve_contexts_v1(
+            chunks=dataset["chunks"], eval_set=eval_set, top_k=top_k,
+            source_policy=source_policy or "none")
+        source_policy = source_policy or "none"
+    actual_retriever = (retrieved_contexts[0]["retriever"] if retrieved_contexts else
+                        {"name": TfidfRetrieverV1.name, "version": TfidfRetrieverV1.version})
     output_dir.mkdir(parents=True, exist_ok=True)
 
     registry = build_default_model_registry(
@@ -1472,24 +1513,12 @@ def run_qa_grounded_v1(
     registry = annotate_registry_availability(registry=registry, base_url=base_url)
     write_json(output_dir / QA_OUTPUT_FILES["qa_model_registry"], registry)
 
-    eval_set = build_eval_set_v1(
-        [] if use_eval_questions_file else dataset["eval_questions_v0"],
-        eval_questions_file=eval_questions_file,
-        static_v1_questions_enabled=static_v1_questions_enabled,
-        static_v1_questions_path=static_v1_questions_path,
-        llm_question_generation_enabled=llm_question_generation_enabled,
-    )
     write_jsonl(output_dir / QA_OUTPUT_FILES["rag_eval_set"], eval_set)
     (output_dir / QA_OUTPUT_FILES["rag_eval_set_card"]).write_text(
         build_eval_set_card_markdown(eval_set),
         encoding="utf-8",
     )
 
-    retrieved_contexts = retrieve_contexts_v1(
-        chunks=dataset["chunks"],
-        eval_set=eval_set,
-        top_k=top_k,
-    )
     write_jsonl(output_dir / QA_OUTPUT_FILES["retrieved_contexts"], retrieved_contexts)
 
     known_chunk_ids = [str(chunk.get("chunk_id") or "") for chunk in dataset["chunks"]]
@@ -1521,6 +1550,7 @@ def run_qa_grounded_v1(
         citation_summary=citation_summary,
         top_k=top_k,
     )
+    eval_summary["retriever"] = actual_retriever
     write_json(output_dir / QA_OUTPUT_FILES["rag_eval_summary"], eval_summary)
 
     (output_dir / QA_OUTPUT_FILES["rag_model_comparison"]).write_text(
@@ -1558,6 +1588,17 @@ def run_qa_grounded_v1(
         eval_set_mode=eval_set_mode,
         eval_questions_file=eval_questions_file,
     )
+    if retrieval_provenance is not None:
+        config_path = output_dir / QA_OUTPUT_FILES["qa_run_config"]
+        config = read_json(config_path)
+        config.update(retriever=actual_retriever, saved_retrieval=retrieval_provenance)
+        write_json(config_path, config)
+        manifest.update(retriever=actual_retriever, saved_retrieval=retrieval_provenance)
+    config_path = output_dir / QA_OUTPUT_FILES["qa_run_config"]
+    config = read_json(config_path)
+    config["source_policy"] = source_policy
+    write_json(config_path, config)
+    manifest["source_policy"] = source_policy
     write_json(output_dir / QA_OUTPUT_FILES["qa_manifest"], manifest)
 
     report_path.parent.mkdir(parents=True, exist_ok=True)
