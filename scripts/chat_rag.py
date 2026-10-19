@@ -1,4 +1,4 @@
-"""Chat RAG da terminale: retrieval locale, fonti esplicite e QA tramite Ollama."""
+"""Terminal RAG chat: local retrieval, explicit sources and QA through Ollama."""
 
 import argparse
 import hashlib
@@ -21,7 +21,7 @@ from kamiknows.run_metadata import utc_now_iso
 
 
 class ChatRetriever:
-    """Carica l'indice una volta; MiniLM è opzionale e richiede cache locale reale."""
+    """Load the index once; optional MiniLM requires a real local model cache."""
 
     def __init__(self, chunks, name):
         self.chunks = chunks
@@ -38,8 +38,8 @@ class ChatRetriever:
             self.vectors = [self.encode(build_embedding_text(chunk)) for chunk in chunks]
 
     def encode(self, text):
-        # Stessa politica dei benchmark per i testi lunghi: finestre esatte di token,
-        # media pesata e normalizzazione; nessun troncamento o fallback hash.
+        # Use the benchmark policy for long texts: exact token windows,
+        # weighted averaging and normalization; no truncation or hash fallback.
         from kamiknows.rag_ready.semantic_dataset import encode_token_windows
         model = self.encoder.model
         ids = model.tokenizer(text, add_special_tokens=False, truncation=False,
@@ -62,7 +62,7 @@ class ChatRetriever:
                     chunk_vectors=[self.vectors[i] for i in indices],
                     chunks=[self.chunks[i] for i in indices], top_k=count)
             results = select_balanced_results(results, ids, top_k)
-            # Dense retrieval salva preview: il prompt deve ricevere il testo completo.
+            # Dense retrieval stores previews; the prompt needs the complete text.
             lookup = {c["chunk_id"]: c for c in self.chunks}
             results = [build_retrieved_qa_chunk(chunk=lookup[r["chunk_id"]],
                         rank=r["rank"], score=r["score"]) for r in results]
@@ -74,11 +74,11 @@ class ChatRetriever:
 
 
 def run_chat(*, retriever, model_config, args, session_dir, input_fn=input, output_fn=print):
-    """Una domanda indipendente per turno: non accumula la cronologia nel prompt."""
+    """Each turn is independent; previous turns are not added to the prompt."""
     known_ids = [c["chunk_id"] for c in retriever.chunks]
-    output_fn("Scrivi una domanda; /exit per uscire. Risposte da revisionare, non validate scientificamente.")
+    output_fn("Enter a question; /exit to quit. Answers require review and are not scientifically validated.")
     turn = 0
-    # Salva subito ogni contesto e ogni risposta completata, anche in caso di errori backend.
+    # Save each context and completed answer immediately, including backend failures.
     with (session_dir / "contexts.jsonl").open("x", encoding="utf-8") as contexts, \
          (session_dir / "answers.jsonl").open("x", encoding="utf-8") as answers:
         while True:
@@ -93,12 +93,12 @@ def run_chat(*, retriever, model_config, args, session_dir, input_fn=input, outp
                 contexts.write(json.dumps(context, ensure_ascii=False) + "\n")
                 contexts.flush()
                 diag = context["source_constraint"]
-                output_fn("Fonti richieste: " + (", ".join(diag["requested_arxiv_ids"]) or "nessuna; corpus completo"))
-                output_fn("Stato retrieval: " + diag["status"])
+                output_fn("Requested sources: " + (", ".join(diag["requested_arxiv_ids"]) or "none; full corpus"))
+                output_fn("Retrieval status: " + diag["status"])
                 for c in context["retrieved_chunks"]:
                     text = c["text"] if args.show_context else " ".join(c["text"].split())[:240]
                     output_fn(f"{c['citation_label']} {c['arxiv_id']} / {c['section']} (score={c['score']:.4f})\n{text}")
-                output_fn("Qwen sta generando la risposta...", flush=True)
+                output_fn("Generating the answer...", flush=True)
                 record = generate_model_answer_records(model_config=model_config,
                     retrieved_contexts=[context], known_chunk_ids=known_ids,
                     base_url=args.base_url, timeout_seconds=args.timeout_seconds)[0]
@@ -106,16 +106,16 @@ def run_chat(*, retriever, model_config, args, session_dir, input_fn=input, outp
                 record["source_constraint"] = diag
                 answers.write(json.dumps(record, ensure_ascii=False) + "\n")
                 answers.flush()
-                output_fn("Risposta: " + record["answer"])
-                output_fn(f"Stato: {record['answer_status']}; citazioni: {record['citation_validation']['status']}")
+                output_fn("Answer: " + record["answer"])
+                output_fn(f"Status: {record['answer_status']}; citations: {record['citation_validation']['status']}")
                 if record["warnings"]:
                     output_fn("Warning: " + ", ".join(record["warnings"]))
                 if record["backend_error"]:
-                    output_fn("Errore backend: " + record["backend_error"]["message"])
+                    output_fn("Backend error: " + record["backend_error"]["message"])
             except (EOFError, KeyboardInterrupt):
-                output_fn("\nSessione interrotta; i turni completati sono salvati.")
+                output_fn("\nSession interrupted; completed turns have been saved.")
                 break
-    output_fn(f"Sessione salvata in: {session_dir}")
+    output_fn(f"Session saved to: {session_dir}")
 
 
 def main(argv=None):
@@ -128,8 +128,8 @@ def main(argv=None):
     parser.add_argument("--base-url", default="http://127.0.0.1:11445")
     parser.add_argument("--num-predict", type=int, default=512)
     parser.add_argument("--timeout-seconds", type=int, default=120)
-    parser.add_argument("--show-context", action="store_true", help="Mostra i passaggi completi.")
-    parser.add_argument("--session-dir", type=Path, help="Directory nuova; default outputs/chat_rag/<UUID>.")
+    parser.add_argument("--show-context", action="store_true", help="Show complete passages.")
+    parser.add_argument("--session-dir", type=Path, help="New directory; default: outputs/chat_rag/<UUID>.")
     args = parser.parse_args(argv)
     try:
         if min(args.top_k, args.num_predict, args.timeout_seconds) < 1:
@@ -147,7 +147,7 @@ def main(argv=None):
         model = registry["models"][0]
         if model["availability_status"] != "available":
             raise RuntimeError(model.get("availability_notes", "Ollama/model unavailable"))
-        print(f"Caricamento di {len(chunks)} chunk e indice {args.retriever}...", flush=True)
+        print(f"Loading {len(chunks)} chunks and the {args.retriever} index...", flush=True)
         retriever = ChatRetriever(chunks, args.retriever)
         session_dir.mkdir(parents=True, exist_ok=False)
         write_json(session_dir / "session_manifest.json", {
