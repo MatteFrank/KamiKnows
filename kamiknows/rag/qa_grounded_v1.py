@@ -560,12 +560,14 @@ def generate_model_answer_records(
     records = []
     for context in retrieved_contexts:
         prompt = build_grounded_qa_prompt_v1(context, model_config.get("prompt_profile", "grounded_json_v1"))
+        generation: dict[str, Any] = {}
         try:
             raw_response = generate_ollama_json(
                 prompt=prompt,
                 model_config=model_config,
                 base_url=base_url,
                 timeout_seconds=timeout_seconds,
+                metadata=generation,
             )
         except Exception as exc:
             records.append(
@@ -586,15 +588,17 @@ def generate_model_answer_records(
             retrieved_chunks=list(context.get("retrieved_chunks", []) or []),
             known_chunk_ids=known_chunk_ids,
         )
-        records.append(
-            build_answer_record_from_parsed(
-                context_record=context,
-                model_config=model_config,
-                raw_response=raw_response,
-                parsed=parsed,
-                citation_validation=validation,
-            )
+        record = build_answer_record_from_parsed(
+            context_record=context,
+            model_config=model_config,
+            raw_response=raw_response,
+            parsed=parsed,
+            citation_validation=validation,
         )
+        record["generation"] = generation
+        if generation.get("done_reason") == "length":
+            record["warnings"] = _dedupe(record["warnings"] + ["truncated_at_token_limit"])
+        records.append(record)
     return records
 
 
@@ -604,24 +608,40 @@ def generate_ollama_json(
     model_config: dict[str, Any],
     base_url: str,
     timeout_seconds: int,
+    metadata: dict[str, Any] | None = None,
 ) -> str:
-    """Call Ollama's generate endpoint with deterministic QA options."""
-    text = _ollama_generate(
+    """Call Ollama's generate endpoint with deterministic QA options.
+
+    If ``metadata`` is given it is filled with the format used, the stop reason
+    and token counts, so truncated answers can be told apart from bad ones.
+    """
+    text, data = _ollama_generate(
         prompt=prompt,
         model_config=model_config,
         base_url=base_url,
         timeout_seconds=timeout_seconds,
-        request_json_format=True,
+        response_format="json",
     )
-    if text:
-        return text
-    text = _ollama_generate(
-        prompt=prompt,
-        model_config=model_config,
-        base_url=base_url,
-        timeout_seconds=timeout_seconds,
-        request_json_format=False,
-    )
+    format_used = "json"
+    if not text:
+        text, data = _ollama_generate(
+            prompt=prompt,
+            model_config=model_config,
+            base_url=base_url,
+            timeout_seconds=timeout_seconds,
+            response_format=None,
+        )
+        format_used = "none_fallback"
+    if metadata is not None:
+        metadata.update(
+            {
+                "json_format": format_used,
+                "done_reason": data.get("done_reason"),
+                "eval_count": data.get("eval_count"),
+                "prompt_eval_count": data.get("prompt_eval_count"),
+                "thinking_chars": len(data.get("thinking") or ""),
+            }
+        )
     if text:
         return text
     raise RuntimeError("Ollama returned an empty or invalid response.")
@@ -633,9 +653,9 @@ def _ollama_generate(
     model_config: dict[str, Any],
     base_url: str,
     timeout_seconds: int,
-    request_json_format: bool,
-) -> str:
-    """Call Ollama once and return the raw text response."""
+    response_format: str | None,
+) -> tuple[str, dict[str, Any]]:
+    """Call Ollama once and return the raw text response and the response payload."""
     payload = {
         "model": model_config["model_name"],
         "prompt": prompt.strip(),
@@ -646,8 +666,8 @@ def _ollama_generate(
             "num_predict": int(model_config.get("num_predict") or model_config.get("max_tokens") or 512),
         },
     }
-    if request_json_format:
-        payload["format"] = "json"
+    if response_format is not None:
+        payload["format"] = response_format
     response = requests.post(
         f"{base_url.rstrip('/')}/api/generate",
         json=payload,
@@ -657,8 +677,8 @@ def _ollama_generate(
     data = response.json()
     text = data.get("response")
     if not isinstance(text, str):
-        return ""
-    return text.strip()
+        return "", data
+    return text.strip(), data
 
 
 def parse_model_json_response(raw_response: str) -> dict[str, Any]:

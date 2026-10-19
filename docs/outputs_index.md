@@ -51,6 +51,9 @@ put notes in `docs/outputs_index_notes.json` and regenerate.
 | `qa_grounded_explicit_sources_word_tfidf_eval_v2_top5` | 2026-10-14 | word | tfidf_local_v1 | explicit_arxiv | qwen3:0.6b | rag_eval_set_v2.jsonl | 5 | ok 11/13 |  |
 | `qa_grounded_qwen06b_semantic_firstdrop100_no_backmatter_minilm_eval_v2_top5` | 2026-10-14 | semantic first_drop(min100) no-backmatter | minilm_local_v1 | none | qwen3:0.6b | rag_eval_set_v2.jsonl | 5 | ok 12/13 |  |
 | `qa_grounded_qwen4b_minilm_eval_v3_paired_top5` | 2026-10-15 | semantic first_drop(min100) no-backmatter | minilm_local_v1 | explicit_arxiv | qwen3:4b-instruct | rag_eval_set_v3_paired.jsonl | 5 | ok 12/20 | Latest baseline: qwen3 4b, eval v3 paired. Manual review in review_qwen4b_eval_v3_paired_v1. |
+| `qa_semantic_fd100_nobm_minilm_explicit_qwen4b_evalv3p_top5_genmeta` | 2026-10-19 | semantic first_drop(min100) no-backmatter | minilm_local_v1 | explicit_arxiv | qwen3:4b-instruct | rag_eval_set_v3_paired.jsonl | 5 | ok 12/20 | Baseline v3 setup + generation metadata (json, num_predict 512). All 3 JSON errors = truncation at 512 tokens. Prompt includes the bc5af35 citation lines. |
+| `qa_semantic_fd100_nobm_minilm_explicit_qwen4b_evalv3p_top5_np1024` | 2026-10-19 | semantic first_drop(min100) no-backmatter | minilm_local_v1 | explicit_arxiv | qwen3:4b-instruct | rag_eval_set_v3_paired.jsonl | 5 | ok 12/20 | As _genmeta but num_predict 1024: 0 truncations (max 627 tokens), other 17 answers identical. Same 4 wrong abstentions (pairs 01i, 02i, 07e, 07i). |
+| `qa_semantic_fd100_nobm_minilm_explicit_qwen4b_evalv3p_top5_schema` | 2026-10-19 | semantic first_drop(min100) no-backmatter | minilm_local_v1 | explicit_arxiv | qwen3:4b-instruct | rag_eval_set_v3_paired.jsonl | 5 | ok 12/20 | As _genmeta but --json-format schema. No gain: 4 truncations, no non-truncation format errors in either run. |
 
 ## Prompt replays on saved contexts
 
