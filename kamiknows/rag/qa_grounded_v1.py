@@ -44,7 +44,7 @@ QA_OUTPUT_FILES = {
 
 VALID_ANSWER_STATUSES = {"answered", "insufficient_evidence", "backend_error"}
 VALID_CONFIDENCE = {"low", "medium", "high"}
-LABEL_RE = re.compile(r"\[?(C[1-9][0-9]*)\]?", flags=re.IGNORECASE)
+LABEL_RE = re.compile(r"(?<![A-Z0-9])\[?(C[1-9][0-9]*)\]?(?![A-Z0-9])", flags=re.IGNORECASE)
 
 
 def load_rag_ready_v1_dataset(
@@ -450,6 +450,8 @@ Use only citation labels that appear in the context: [C1], [C2], ...
 Do not invent citation labels, chunk IDs, arXiv IDs, titles, or sources.
 If the context does not support the answer, set answer_status to "insufficient_evidence".
 Every factual claim in answer must include one or more labels like [C1].
+For answer_status="answered", citations must contain at least one valid citation_id from the retrieved context, such as "C1".
+If you cannot include a valid retrieved citation_id, set answer_status to "insufficient_evidence".
 Keep the answer concise and technical.
 {source_instruction}
 

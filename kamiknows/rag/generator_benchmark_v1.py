@@ -20,6 +20,7 @@ from kamiknows.rag.outputs import write_json, write_jsonl
 from kamiknows.rag.qa_grounded_v1 import (
     DEFAULT_BASE_URL,
     build_grounded_qa_prompt_v1,
+    extract_citation_labels,
     generate_ollama_json,
     list_local_ollama_models,
     model_slug,
@@ -43,6 +44,26 @@ BENCHMARK_OUTPUT_FILES = {
     "manifest": "benchmark_manifest_v1.json",
 }
 
+DEBUG_OUTPUT_FILES = {
+    "citation_failure_audit": "citation_failure_audit_v1.jsonl",
+    "citation_failure_summary": "citation_failure_summary_v1.json",
+    "prompt_profile_failure_summary": "prompt_profile_failure_summary_v1.json",
+    "context_label_mapping_summary": "context_label_mapping_summary_v1.json",
+    "manifest": "benchmark_debug_manifest_v1.json",
+}
+
+FAILURE_CAUSES = {
+    "model_returned_empty_citations_array",
+    "citations_in_text_but_not_array",
+    "citation_label_format_mismatch",
+    "citation_label_not_in_context",
+    "answer_status_answered_but_no_citation",
+    "json_parse_fallback_lost_citations",
+    "context_label_mapping_error",
+    "prompt_noncompliance",
+    "unknown",
+}
+
 
 def run_rag_generator_benchmark_v1(
     *,
@@ -63,6 +84,11 @@ def run_rag_generator_benchmark_v1(
     base_url: str = DEFAULT_BASE_URL,
     timeout_seconds_override: int | None = None,
     context_sources: list[str] | None = None,
+    limit_questions: int | None = None,
+    limit_configs: int | None = None,
+    question_ids: list[str] | None = None,
+    config_ids: list[str] | None = None,
+    dry_run_matrix: bool = False,
     pytest_status: str | None = None,
 ) -> dict[str, Any]:
     """Run the full generator benchmark and write all artifacts."""
@@ -75,6 +101,11 @@ def run_rag_generator_benchmark_v1(
     chunks = read_jsonl(rag_ready_dir / "chunks_v1.jsonl")
     rag_manifest = read_json(rag_ready_dir / "rag_manifest_v1.json")
     eval_questions = read_jsonl(eval_questions_file)
+    eval_questions = filter_eval_questions(
+        eval_questions,
+        question_ids=question_ids,
+        limit_questions=limit_questions,
+    )
     known_chunk_ids = [str(chunk.get("chunk_id") or "") for chunk in chunks]
 
     prompt_profiles = prompt_profiles or [
@@ -113,6 +144,33 @@ def run_rag_generator_benchmark_v1(
         backend=backend,
         top_k=top_k,
     )
+    matrix["configs"] = filter_benchmark_configs(
+        matrix["configs"],
+        config_ids=config_ids,
+        limit_configs=limit_configs,
+    )
+    matrix["selection"] = {
+        "question_ids": list(question_ids or []),
+        "limit_questions": limit_questions,
+        "config_ids": list(config_ids or []),
+        "limit_configs": limit_configs,
+        "dry_run_matrix": dry_run_matrix,
+    }
+    if dry_run_matrix:
+        return {
+            "chunks": chunks,
+            "eval_questions": eval_questions,
+            "contexts_by_source": contexts_by_source,
+            "matrix": matrix,
+            "answer_records": [],
+            "summary": None,
+            "citation_summary": None,
+            "abstention_analysis": None,
+            "recommended_config": None,
+            "manifest": None,
+            "output_paths": {},
+            "report_path": str(report_path),
+        }
 
     availability = list_local_ollama_models(base_url=base_url)
     answer_records = generate_benchmark_answers(
@@ -243,6 +301,42 @@ def build_benchmark_matrix(
     }
 
 
+def filter_eval_questions(
+    eval_questions: list[dict[str, Any]],
+    *,
+    question_ids: list[str] | None = None,
+    limit_questions: int | None = None,
+) -> list[dict[str, Any]]:
+    """Apply deterministic question selection for reduced benchmark runs."""
+    selected = list(eval_questions)
+    if question_ids:
+        wanted = set(str(question_id) for question_id in question_ids)
+        selected = [question for question in selected if str(question.get("question_id") or "") in wanted]
+    if limit_questions is not None:
+        if limit_questions < 1:
+            raise ValueError("limit_questions must be >= 1")
+        selected = selected[:limit_questions]
+    return selected
+
+
+def filter_benchmark_configs(
+    configs: list[dict[str, Any]],
+    *,
+    config_ids: list[str] | None = None,
+    limit_configs: int | None = None,
+) -> list[dict[str, Any]]:
+    """Apply deterministic config selection for reduced benchmark runs."""
+    selected = list(configs)
+    if config_ids:
+        wanted = set(str(config_id) for config_id in config_ids)
+        selected = [config for config in selected if str(config.get("config_id") or "") in wanted]
+    if limit_configs is not None:
+        if limit_configs < 1:
+            raise ValueError("limit_configs must be >= 1")
+        selected = selected[:limit_configs]
+    return selected
+
+
 def load_benchmark_contexts(
     *,
     chunks: list[dict[str, Any]],
@@ -351,6 +445,8 @@ If evidence is missing, incomplete, ambiguous, or only indirectly related, set a
 If the question requires comparing multiple sources and the provided context does not contain all required sides, set answer_status to "insufficient_evidence".
 If benchmark expected_behavior is "insufficient_evidence", answer "answered" only when the provided context explicitly supports every requested detail.
 Use only citation labels that appear in the context.
+For answer_status="answered", citations must contain at least one valid citation_id from the retrieved context, such as "C1".
+If you cannot include a valid retrieved citation_id, set answer_status to "insufficient_evidence".
 Keep the answer concise and technical.
 
 Benchmark instruction fields:
@@ -534,6 +630,266 @@ def build_abstention_analysis(answer_records: list[dict[str, Any]]) -> dict[str,
         "per_prompt_profile": _abstention_counts_by(rows, "prompt_profile"),
         "per_context_source": _abstention_counts_by(rows, "context_source"),
         "manual_review_required": True,
+    }
+
+
+def run_benchmark_citation_debug_v1(
+    *,
+    benchmark_output_dir: Path,
+    output_dir: Path,
+    report_path: Path,
+    pytest_status: str | None = None,
+) -> dict[str, Any]:
+    """Diagnose P2T7 citation failures without rerunning the full benchmark."""
+    benchmark_output_dir = Path(benchmark_output_dir)
+    output_dir = Path(output_dir)
+    report_path = Path(report_path)
+    answer_records = read_jsonl(benchmark_output_dir / BENCHMARK_OUTPUT_FILES["benchmark_answers"])
+
+    audit = build_citation_failure_audit(answer_records)
+    context_mapping_summary = validate_context_label_mapping(answer_records)
+    failure_summary = build_citation_failure_summary(
+        answer_records=answer_records,
+        audit_records=audit,
+        context_label_mapping_summary=context_mapping_summary,
+    )
+    axis_summary = build_prompt_profile_failure_summary(
+        answer_records=answer_records,
+        audit_records=audit,
+    )
+    output_paths = {key: output_dir / filename for key, filename in DEBUG_OUTPUT_FILES.items()}
+    write_jsonl(output_paths["citation_failure_audit"], audit)
+    write_json(output_paths["citation_failure_summary"], failure_summary)
+    write_json(output_paths["prompt_profile_failure_summary"], axis_summary)
+    write_json(output_paths["context_label_mapping_summary"], context_mapping_summary)
+    manifest = {
+        "benchmark_debug_manifest_version": "benchmark_debug_manifest_v1",
+        "created_at": utc_now_iso(),
+        "source_benchmark_output_dir": str(benchmark_output_dir),
+        "source_answer_file": str(benchmark_output_dir / BENCHMARK_OUTPUT_FILES["benchmark_answers"]),
+        "output_dir": str(output_dir),
+        "output_files": {key: str(path) for key, path in output_paths.items()},
+        "report_path": str(report_path),
+        "full_benchmark_rerun": False,
+        "pytest_status": pytest_status,
+        "manual_review_required": True,
+        "scope": "Static citation-failure diagnostics over existing P2T7 answer records.",
+    }
+    write_json(output_paths["manifest"], manifest)
+
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        build_citation_debug_report_markdown(
+            benchmark_output_dir=benchmark_output_dir,
+            output_dir=output_dir,
+            failure_summary=failure_summary,
+            axis_summary=axis_summary,
+            context_label_mapping_summary=context_mapping_summary,
+            pytest_status=pytest_status,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "answer_records": answer_records,
+        "audit_records": audit,
+        "failure_summary": failure_summary,
+        "prompt_profile_failure_summary": axis_summary,
+        "context_label_mapping_summary": context_mapping_summary,
+        "manifest": manifest,
+        "output_paths": {key: str(path) for key, path in output_paths.items()},
+        "report_path": str(report_path),
+    }
+
+
+def build_citation_failure_audit(answer_records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build detailed audit rows for records with invalid citation validation."""
+    audit = []
+    for record in answer_records:
+        validation = record.get("citation_validation", {}) or {}
+        if validation.get("valid", False):
+            continue
+        extracted = extract_used_citation_labels_from_record(record)
+        available_labels = available_retrieved_citation_labels(record)
+        mapping_issues = _context_label_mapping_issues_for_record(record)
+        audit.append(
+            {
+                "benchmark_config_id": record.get("benchmark_config_id", ""),
+                "question_id": record.get("question_id", ""),
+                "question_type": record.get("question_type", ""),
+                "model_name": record.get("model_name", ""),
+                "prompt_profile": record.get("prompt_profile", ""),
+                "context_source": record.get("context_source", ""),
+                "answer_status": record.get("answer_status", ""),
+                "expected_behavior": record.get("expected_behavior", ""),
+                "answer": record.get("answer", ""),
+                "evidence": record.get("evidence", ""),
+                "limitations": record.get("limitations", ""),
+                "citations": list(record.get("citations", []) or []),
+                "raw_model_response": record.get("raw_model_response", ""),
+                "available_retrieved_labels": available_labels,
+                "used_citation_labels_by_field": extracted["by_field"],
+                "used_citation_labels": extracted["all"],
+                "invented_citation_labels": list(validation.get("invented_citation_labels", []) or []),
+                "answered_without_valid_citation": bool(validation.get("answered_without_valid_citation")),
+                "parse_warnings": list(record.get("parse_warnings", []) or []),
+                "citation_validation_status": validation.get("status", ""),
+                "citation_validation_valid": bool(validation.get("valid")),
+                "valid_used_citation_labels": list(validation.get("valid_used_citation_labels", []) or []),
+                "context_label_mapping_issues": mapping_issues,
+                "suspected_failure_cause": classify_citation_failure(record),
+                "grounding_status": record.get("grounding_status", "not_reviewed"),
+            }
+        )
+    return audit
+
+
+def extract_used_citation_labels_from_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Extract citation labels from structured and text answer fields."""
+    by_field = {
+        "citations": _extract_labels_from_value(record.get("citations", [])),
+        "answer": extract_citation_labels(str(record.get("answer") or "")),
+        "evidence": extract_citation_labels(str(record.get("evidence") or "")),
+        "limitations": extract_citation_labels(str(record.get("limitations") or "")),
+        "unsupported_or_inferred": _extract_labels_from_value(record.get("unsupported_or_inferred", [])),
+    }
+    labels: list[str] = []
+    for values in by_field.values():
+        labels.extend(values)
+    return {
+        "by_field": {key: _dedupe_labels(values) for key, values in by_field.items()},
+        "all": _dedupe_labels(labels),
+    }
+
+
+def available_retrieved_citation_labels(record: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the final context label map visible to the generator."""
+    labels = []
+    for chunk in record.get("retrieved_chunks", []) or []:
+        labels.append(
+            {
+                "rank": chunk.get("rank"),
+                "citation_id": str(chunk.get("citation_id") or ""),
+                "citation_label": str(chunk.get("citation_label") or ""),
+                "chunk_id": str(chunk.get("chunk_id") or ""),
+                "paper_id": str(chunk.get("paper_id") or ""),
+                "arxiv_id": str(chunk.get("arxiv_id") or ""),
+            }
+        )
+    return labels
+
+
+def classify_citation_failure(record: dict[str, Any]) -> str:
+    """Classify a citation-validation failure into a deterministic cause bucket."""
+    validation = record.get("citation_validation", {}) or {}
+    extracted = extract_used_citation_labels_from_record(record)
+    by_field = extracted["by_field"]
+    available = {item["citation_id"] for item in available_retrieved_citation_labels(record) if item["citation_id"]}
+    structured_labels = set(by_field.get("citations", []) or [])
+    text_labels = set(by_field.get("answer", []) or [])
+    text_labels.update(by_field.get("evidence", []) or [])
+    text_labels.update(by_field.get("limitations", []) or [])
+    warnings = set(str(warning) for warning in record.get("parse_warnings", []) or [])
+    answer_status = str(record.get("answer_status") or "")
+    has_answer_text = bool(str(record.get("answer") or "").strip() or str(record.get("evidence") or "").strip())
+
+    if _context_label_mapping_issues_for_record(record):
+        return "context_label_mapping_error"
+    if text_labels & available and not structured_labels:
+        return "citations_in_text_but_not_array"
+    if validation.get("invented_citation_labels") or (set(extracted["all"]) - available):
+        return "citation_label_not_in_context"
+    if record.get("citations") and not structured_labels:
+        return "citation_label_format_mismatch"
+    if "json_parse_error" in warnings and not extracted["all"]:
+        return "json_parse_fallback_lost_citations"
+    if answer_status == "answered" and not validation.get("valid_used_citation_labels"):
+        if not record.get("citations") and not has_answer_text:
+            return "answer_status_answered_but_no_citation"
+        if not record.get("citations"):
+            return "model_returned_empty_citations_array"
+        return "prompt_noncompliance"
+    if not validation.get("valid", True):
+        return "prompt_noncompliance"
+    return "unknown"
+
+
+def validate_context_label_mapping(answer_records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Check final retrieved context labels for deterministic C1... mapping."""
+    issues = []
+    chunks_checked = 0
+    for record in answer_records:
+        record_issues = _context_label_mapping_issues_for_record(record)
+        chunks_checked += len(record.get("retrieved_chunks", []) or [])
+        for issue in record_issues:
+            issues.append(
+                {
+                    "benchmark_config_id": record.get("benchmark_config_id", ""),
+                    "question_id": record.get("question_id", ""),
+                    "context_source": record.get("context_source", ""),
+                    **issue,
+                }
+            )
+    return {
+        "context_label_mapping_summary_version": "context_label_mapping_summary_v1",
+        "created_at": utc_now_iso(),
+        "records_checked": len(answer_records),
+        "chunks_checked": chunks_checked,
+        "issue_count": len(issues),
+        "status": "valid" if not issues else "invalid",
+        "issues": issues[:100],
+        "notes": "Labels are checked against the final context order passed to each generator record.",
+    }
+
+
+def build_citation_failure_summary(
+    *,
+    answer_records: list[dict[str, Any]],
+    audit_records: list[dict[str, Any]],
+    context_label_mapping_summary: dict[str, Any],
+) -> dict[str, Any]:
+    """Summarize invalid citation records and suspected causes."""
+    cause_counts = Counter(str(record.get("suspected_failure_cause") or "unknown") for record in audit_records)
+    status_counts = Counter(str(record.get("citation_validation_status") or "unknown") for record in audit_records)
+    answered_without_valid = sum(1 for record in audit_records if record.get("answered_without_valid_citation"))
+    invented = sum(len(record.get("invented_citation_labels", []) or []) for record in audit_records)
+    main_cause = cause_counts.most_common(1)[0][0] if cause_counts else None
+    return {
+        "citation_failure_summary_version": "citation_failure_summary_v1",
+        "created_at": utc_now_iso(),
+        "source_answer_records": len(answer_records),
+        "invalid_citation_records": len(audit_records),
+        "invented_citation_labels": invented,
+        "answered_without_valid_citation_records": answered_without_valid,
+        "citation_validation_status_counts": dict(sorted(status_counts.items())),
+        "suspected_failure_cause_counts": dict(sorted(cause_counts.items())),
+        "main_suspected_failure_cause": main_cause,
+        "context_label_mapping_status": context_label_mapping_summary.get("status", ""),
+        "context_label_mapping_issue_count": context_label_mapping_summary.get("issue_count", 0),
+        "failure_cause_taxonomy": sorted(FAILURE_CAUSES),
+        "manual_review_required": True,
+        "notes": "Cause classification is deterministic debugging metadata; it is not a scientific correctness judgment.",
+    }
+
+
+def build_prompt_profile_failure_summary(
+    *,
+    answer_records: list[dict[str, Any]],
+    audit_records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Summarize citation failures by the required benchmark axes."""
+    axes = ["model_name", "prompt_profile", "context_source", "question_type", "benchmark_config_id"]
+    return {
+        "prompt_profile_failure_summary_version": "prompt_profile_failure_summary_v1",
+        "created_at": utc_now_iso(),
+        "axes": {
+            axis: _failure_counts_by_axis(
+                answer_records=answer_records,
+                audit_records=audit_records,
+                axis=axis,
+            )
+            for axis in axes
+        },
+        "notes": "Rates use all benchmark answer records as the denominator for each axis value.",
     }
 
 
@@ -830,6 +1186,98 @@ def build_task_report_markdown(
     return "\n".join(lines)
 
 
+def build_citation_debug_report_markdown(
+    *,
+    benchmark_output_dir: Path,
+    output_dir: Path,
+    failure_summary: dict[str, Any],
+    axis_summary: dict[str, Any],
+    context_label_mapping_summary: dict[str, Any],
+    pytest_status: str | None,
+) -> str:
+    """Build the Phase 2 Task 07b report."""
+    causes = failure_summary.get("suspected_failure_cause_counts", {}) or {}
+    statuses = failure_summary.get("citation_validation_status_counts", {}) or {}
+    prompt_axis = (axis_summary.get("axes", {}) or {}).get("prompt_profile", {})
+    model_axis = (axis_summary.get("axes", {}) or {}).get("model_name", {})
+    lines = [
+        "# Phase 2 Task 07b - Benchmark Citation Failure Debug v1",
+        "",
+        f"Date: {utc_now_iso()[:10]}",
+        "",
+        "## Objective",
+        "",
+        "Diagnose P2T7 benchmark citation-validation failures and harden the reduced benchmark controls and future prompt/validator behavior.",
+        "",
+        "The full P2T7 benchmark was not rerun in this task; only reduced validation or static diagnostics were performed.",
+        "",
+        "## Inputs Used",
+        "",
+        f"- `{benchmark_output_dir / BENCHMARK_OUTPUT_FILES['benchmark_answers']}`",
+        f"- existing P2T7 output dir: `{benchmark_output_dir}`",
+        "",
+        "## Outputs Produced",
+        "",
+        *[f"- `{output_dir / filename}`" for filename in DEBUG_OUTPUT_FILES.values()],
+        "- `docs/task_reports/phase2_task07b_benchmark_citation_debug_v1.md`",
+        "",
+        "## Commands Run",
+        "",
+        "- Static diagnostics over existing `benchmark_answers_v1.jsonl`",
+        "- `pytest -q`" if pytest_status else "- `pytest -q` was pending when this report was written.",
+        "",
+        "## Key Metrics",
+        "",
+        f"- Source answer records: {failure_summary.get('source_answer_records')}",
+        f"- Invalid citation records: {failure_summary.get('invalid_citation_records')}",
+        f"- Answered without valid citation records: {failure_summary.get('answered_without_valid_citation_records')}",
+        f"- Invented citation labels: {failure_summary.get('invented_citation_labels')}",
+        f"- Main suspected failure cause: `{failure_summary.get('main_suspected_failure_cause')}`",
+        f"- Context label mapping status: `{context_label_mapping_summary.get('status')}`",
+        f"- Context label mapping issues: {context_label_mapping_summary.get('issue_count')}",
+        "",
+        "## Failure Cause Counts",
+        "",
+    ]
+    for cause, count in sorted(causes.items()):
+        lines.append(f"- `{cause}`: {count}")
+    lines.extend(["", "## Citation Validation Status Counts", ""])
+    for status, count in sorted(statuses.items()):
+        lines.append(f"- `{status}`: {count}")
+    lines.extend(["", "## Axis Highlights", ""])
+    for name, values in (("prompt_profile", prompt_axis), ("model_name", model_axis)):
+        lines.append(f"### {name}")
+        for value, row in sorted(values.items()):
+            lines.append(
+                f"- `{value}`: invalid={row.get('invalid_citation_records')}/{row.get('total_records')}, causes={json.dumps(row.get('suspected_failure_cause_counts', {}), sort_keys=True)}"
+            )
+        lines.append("")
+    lines.extend(
+        [
+            "## Code Hardening",
+            "",
+            "- Future P2T7 prompts now state that `answer_status=\"answered\"` requires a non-empty `citations` array containing at least one valid retrieved `citation_id`.",
+            "- Citation extraction now uses safer label boundaries while still accepting `[C1]` and `C1` forms.",
+            "- The benchmark CLI now supports reduced question/config selection and dry-run matrix inspection.",
+            "",
+            "## Limits And Non-Claims",
+            "",
+            "- No training, LoRA, QLoRA, discovery generation, corpus scaling, parser changes to source full text, or chunks_v1 changes were performed.",
+            "- Expected source IDs were not added to generation prompts.",
+            "- These diagnostics classify structural citation failures only; they do not establish factual entailment or scientific answer correctness.",
+            "- Manual grounding review remains required.",
+            "",
+            "## Next Recommended Step",
+            "",
+            "Use the debug audit to inspect the top invalid configs, then run at most a small reduced benchmark before choosing any manual-review queue.",
+            "",
+            f"Pytest status: {pytest_status or 'pending'}",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _contexts_from_p2t6_baseline(path: Path, *, top_k: int) -> list[dict[str, Any]]:
     records = []
     for record in read_jsonl(path):
@@ -1068,6 +1516,106 @@ def _summarize_config(config: dict[str, Any], records: list[dict[str, Any]]) -> 
             and record.get("citation_validation", {}).get("valid_used_citation_labels")
         ),
     }
+
+
+def _extract_labels_from_value(value: Any) -> list[str]:
+    labels: list[str] = []
+    if value is None:
+        return labels
+    if isinstance(value, dict):
+        for inner in value.values():
+            labels.extend(_extract_labels_from_value(inner))
+        return labels
+    if isinstance(value, (list, tuple, set)):
+        for inner in value:
+            labels.extend(_extract_labels_from_value(inner))
+        return labels
+    return extract_citation_labels(str(value))
+
+
+def _context_label_mapping_issues_for_record(record: dict[str, Any]) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, chunk in enumerate(record.get("retrieved_chunks", []) or [], start=1):
+        expected_id = f"C{index}"
+        citation_id = str(chunk.get("citation_id") or "")
+        citation_label = str(chunk.get("citation_label") or "")
+        rank = chunk.get("rank")
+        if citation_id != expected_id:
+            issues.append(
+                {
+                    "rank": rank,
+                    "chunk_id": str(chunk.get("chunk_id") or ""),
+                    "issue": "citation_id_not_sequential_final_context",
+                    "expected_citation_id": expected_id,
+                    "actual_citation_id": citation_id,
+                }
+            )
+        if citation_label != f"[{expected_id}]":
+            issues.append(
+                {
+                    "rank": rank,
+                    "chunk_id": str(chunk.get("chunk_id") or ""),
+                    "issue": "citation_label_not_sequential_final_context",
+                    "expected_citation_label": f"[{expected_id}]",
+                    "actual_citation_label": citation_label,
+                }
+            )
+        if citation_id and citation_id in seen:
+            issues.append(
+                {
+                    "rank": rank,
+                    "chunk_id": str(chunk.get("chunk_id") or ""),
+                    "issue": "duplicate_citation_id",
+                    "actual_citation_id": citation_id,
+                }
+            )
+        seen.add(citation_id)
+    return issues
+
+
+def _failure_counts_by_axis(
+    *,
+    answer_records: list[dict[str, Any]],
+    audit_records: list[dict[str, Any]],
+    axis: str,
+) -> dict[str, Any]:
+    totals = Counter(str(record.get(axis) or "") for record in answer_records)
+    grouped = defaultdict(list)
+    for record in audit_records:
+        grouped[str(record.get(axis) or "")].append(record)
+    values = sorted(set(totals) | set(grouped))
+    summary = {}
+    for value in values:
+        invalid = grouped.get(value, [])
+        cause_counts = Counter(str(record.get("suspected_failure_cause") or "unknown") for record in invalid)
+        status_counts = Counter(str(record.get("citation_validation_status") or "unknown") for record in invalid)
+        total = totals.get(value, 0)
+        summary[value] = {
+            "total_records": total,
+            "invalid_citation_records": len(invalid),
+            "invalid_citation_rate": len(invalid) / total if total else 0.0,
+            "answered_without_valid_citation_records": sum(
+                1 for record in invalid if record.get("answered_without_valid_citation")
+            ),
+            "invented_citation_labels": sum(
+                len(record.get("invented_citation_labels", []) or []) for record in invalid
+            ),
+            "suspected_failure_cause_counts": dict(sorted(cause_counts.items())),
+            "citation_validation_status_counts": dict(sorted(status_counts.items())),
+        }
+    return summary
+
+
+def _dedupe_labels(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    labels = []
+    for value in values:
+        label = str(value or "").upper()
+        if label and label not in seen:
+            labels.append(label)
+            seen.add(label)
+    return labels
 
 
 def _citation_counts_by(answer_records: list[dict[str, Any]], key: str) -> dict[str, Any]:
