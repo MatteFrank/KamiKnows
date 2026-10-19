@@ -86,14 +86,69 @@ outputs/rag_ready_fastcalo_v1/chunk_audit_v0_details.jsonl
 
 ## Output Conventions
 
-- Task outputs go under `outputs/<task_specific_name>/`.
-- Task reports go under `docs/task_reports/`.
-- Registry, manifest, summary, audit, and comparison files should be versioned
-  with suffixes such as `_v1`.
-- JSON should be pretty printed when it is a top-level summary or manifest.
-- JSONL should contain one object per line and use stable identifiers.
-- Every major output directory should include a manifest or run config when
-  feasible.
+`outputs/` is git-ignored. `docs/outputs_index.md` is the versioned record of
+what every run directory is. Read it before starting an experiment: reuse an
+existing dataset/retrieval run when possible instead of rebuilding it.
+
+### Run directory names
+
+New run directories use a fixed field order, `_`-separated, lowercase. Older
+directories keep their names; do not rename them.
+
+```text
+rag_ready_fastcalo_<chunker>_v<N>                                    step 4
+retrieval_<chunker>_<sources>_<evalset>_top<k>[_<variant>]           step 6
+qa_<chunker>_<retriever>_<sources>_<model>_<evalset>_top<k>[_<variant>]   steps 7-8
+replay_<baseline_run>_<prompt_profile>[_<variant>]                   saved-context replays
+review_<run_or_topic>_v<N>                                           manual reviews
+```
+
+Field vocabulary (extend it here when a new value appears):
+
+- chunker: `word`, `sentence`, `sentence_nobm`, `semantic`, `semantic_fd100_nobm`
+- retriever: `tfidf`, `minilm`, `tfidf_rerank`
+- sources: `allsrc` (`--source-policy none`), `explicit` (`explicit_arxiv`)
+- model: `qwen06b`, `qwen4b`, `mistral7b`
+- evalset: `evalv1h`, `evalv2`, `evalv3p`
+- variant: free short tag for the one thing changed (`retry1`, `promptsyn2`, ...)
+
+Example: `qa_semantic_fd100_nobm_minilm_explicit_qwen4b_evalv3p_top5`.
+
+### Required content of a run directory
+
+- A run config or manifest (JSON, pretty printed) with: `created_at`, every
+  input path with its sha256, all parameters, model names, git commit.
+- `run.slurm`: copy of the exact SLURM script, when run on SLURM.
+- The SLURM log. `#SBATCH --output` cannot point inside the run directory
+  (it would be created before the "directory already exists" check), so use
+  `#SBATCH --output=<absolute repo path>/outputs/_slurm_logs/%x-%j.log`
+  (SLURM does not expand variables in `#SBATCH` lines) and copy it into
+  `$RUN_DIR` at the end of the job.
+- The step's standard machine-readable outputs (`*_v1.jsonl`, `*_summary_v1.json`).
+
+A Markdown report with the same name goes in
+`docs/task_reports/<run_name>.md` (see Markdown Report Rules).
+
+### Hygiene rules
+
+- Never write loose files at the root of `outputs/`; everything belongs to a
+  run directory (or `_slurm_logs/`).
+- Never put code in `outputs/` (it is not versioned). Experiment scripts go in
+  `scripts/`; the run directory only stores the command line and the config.
+- Never overwrite or delete a run directory. A failed or cancelled run is
+  retried in a new directory with `_retry<N>`; once the retry succeeds, move
+  the failed one to `outputs/_archive/` and record why in
+  `docs/outputs_index_notes.json`.
+- After every run: add a one-line note for it in
+  `docs/outputs_index_notes.json` (what changed vs. which baseline), then run
+  `python3 scripts/build_outputs_index.py`.
+
+### File formats
+
+- Registry, manifest, summary, audit, and comparison files are versioned with
+  suffixes such as `_v1`.
+- JSON is pretty printed when it is a top-level summary or manifest.
+- JSONL contains one object per line and uses stable identifiers.
 
 ## Main Commands
 
