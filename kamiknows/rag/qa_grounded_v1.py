@@ -411,8 +411,10 @@ def evaluate_retrieval_for_question(
     }
 
 
-def build_grounded_qa_prompt_v1(context_record: dict[str, Any]) -> str:
+def build_grounded_qa_prompt_v1(context_record: dict[str, Any], prompt_profile: str = "grounded_json_v1") -> str:
     """Build the strict grounded prompt for one retrieved context."""
+    if prompt_profile not in {"grounded_json_v1", "synthesis_v2"}:
+        raise ValueError(f"Unknown QA prompt profile: {prompt_profile}")
     blocks = []
     for chunk in context_record.get("retrieved_chunks", []) or []:
         blocks.append(
@@ -441,7 +443,7 @@ def build_grounded_qa_prompt_v1(context_record: dict[str, Any]) -> str:
         )
         if constraint.get("status") != "available":
             source_instruction += "Requested evidence is unavailable or source budget is insufficient. Set answer_status to insufficient_evidence.\n"
-    return f"""You are KamiKnows, a citation-constrained scientific QA assistant.
+    prompt = f"""You are KamiKnows, a citation-constrained scientific QA assistant.
 
 Use only the retrieved context below. Do not use outside knowledge.
 Use only citation labels that appear in the context: [C1], [C2], ...
@@ -468,6 +470,12 @@ Question:
 Retrieved context:
 {context_text}
 """
+    if prompt_profile == "synthesis_v2":
+        from kamiknows.rag.prompt_profiles import SYNTHESIS_INSTRUCTIONS_V2
+        marker = "Return only valid JSON with this exact shape:"
+        # Cambia solo le istruzioni: schema, domanda e contesto restano identici.
+        prompt = SYNTHESIS_INSTRUCTIONS_V2 + "\n" + source_instruction + "\n" + marker + prompt.split(marker, 1)[1]
+    return prompt
 
 
 def list_local_ollama_models(base_url: str = DEFAULT_BASE_URL, timeout_seconds: int = 5) -> dict[str, Any]:
@@ -549,7 +557,7 @@ def generate_model_answer_records(
 
     records = []
     for context in retrieved_contexts:
-        prompt = build_grounded_qa_prompt_v1(context)
+        prompt = build_grounded_qa_prompt_v1(context, model_config.get("prompt_profile", "grounded_json_v1"))
         try:
             raw_response = generate_ollama_json(
                 prompt=prompt,
@@ -828,6 +836,7 @@ def build_answer_record_from_parsed(
         "warnings": _dedupe(warnings),
         "backend_error": None,
         "grounding_status": "not_reviewed",
+        "prompt_profile": model_config.get("prompt_profile", "grounded_json_v1"),
     }
 
 

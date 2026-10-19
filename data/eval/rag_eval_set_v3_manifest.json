@@ -1,0 +1,29 @@
+{
+  "version": "rag_eval_v3_paired",
+  "created_date": "2026-10-15",
+  "questions": 20,
+  "pairs": 10,
+  "explicit": 10,
+  "implicit": 10,
+  "answerable": 16,
+  "insufficient_evidence": 4,
+  "comparison_pairs": 3,
+  "papers": 5,
+  "review_status": "pending",
+  "reference_status": "draft_not_human_validated",
+  "runtime_reference_answers_enabled": false,
+  "section_keyword_hints_enabled": false,
+  "sha256": {
+    "rag_eval_set_v3_paired.jsonl": "e5ed90e6c77b3519699e87f5ee0398b14e8709fa6250423c93b8d245daec7dc9",
+    "rag_eval_set_v3_reference_answers_draft.jsonl": "be44fe7e04f0334f8d55f55be733012e87c8c2af6d469e7de71ef1b4392ec028",
+    "rag_eval_set_v3_paired.md": "946f1939d982b6c8fcb74fddea7f2fb6d83a1daa668ff95ae441b8ab1b7e2162",
+    "rag_eval_set_v3_reference_review.csv": "b8135042ca83222bdd2d6bb57661fa1c8a03cf4c66042cbafb2feaea370b18e4"
+  },
+  "source_sections_sha256": {
+    "outputs/fulltext_fastcalo_5_v0/processed/papers/1705_02355v2/sections.json": "49c9c5c929be79d0c65b514d4de0436ca1a9cc0234cb173203175c5ae0954317",
+    "outputs/fulltext_fastcalo_5_v0/processed/papers/1807_01954v2/sections.json": "2411982c0915bb07e1ea762b01b93bafbc6ba7fa9044f6ef4c5593989ab235b8",
+    "outputs/fulltext_fastcalo_5_v0/processed/papers/2106_05285v3/sections.json": "467e0c24992a2875e9f5bb2b16ea1369d1d59ce2999ca99e70c4e473ba3cfc76",
+    "outputs/fulltext_fastcalo_5_v0/processed/papers/1712_10321v1/sections.json": "cc190e50ef065915561021c630ea3a2ffd38b215281206bd35fe7e067ffcd7ae",
+    "outputs/fulltext_fastcalo_5_v0/processed/papers/1805_00850v2/sections.json": "e2e9f2fb8d9a0b3c6f07e66323f7413357b4df4107d95b4af9011fcdacbb26de"
+  }
+}
