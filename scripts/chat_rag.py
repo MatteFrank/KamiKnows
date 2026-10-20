@@ -107,6 +107,11 @@ def run_chat(*, retriever, model_config, args, session_dir, input_fn=input, outp
                 answers.write(json.dumps(record, ensure_ascii=False) + "\n")
                 answers.flush()
                 output_fn("Answer: " + record["answer"])
+                by_label = {c["citation_label"].strip("[]"): c for c in context["retrieved_chunks"]}
+                cited = [by_label[l] for l in record.get("citations") or [] if l in by_label]
+                if cited:
+                    output_fn("Sources: " + "; ".join(
+                        f"{c['citation_label']} {c['arxiv_id']} / {c['section']}" for c in cited))
                 output_fn(f"Status: {record['answer_status']}; citations: {record['citation_validation']['status']}")
                 if record["warnings"]:
                     output_fn("Warning: " + ", ".join(record["warnings"]))
