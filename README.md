@@ -1,7 +1,7 @@
 # KamiKnows
 
-KamiKnows is a small, traceable RAG (retrieval-augmented generation) pipeline
-for scientific papers. It downloads the LaTeX sources of a fixed set of arXiv
+KamiKnows is a traceable RAG (retrieval-augmented generation) pipeline for
+scientific papers. It downloads the LaTeX sources of a set of arXiv
 papers, splits them into chunks, retrieves the chunks relevant to each
 question, and asks a local LLM (through Ollama) to answer **only from those
 chunks, citing them**. Every run is saved with a manifest, so any answer can
@@ -10,6 +10,10 @@ be traced back to the passages, the chunks and the papers it came from.
 The current corpus is five fast calorimeter simulation papers (FastCaloSim:
 GAN, WGAN and normalizing-flow shower generators) with a 20-question
 evaluation set.
+
+**Slides:** [KamiKnows_pipeline.pdf](KamiKnows_pipeline.pdf) walks through the
+same content visually: repository layout, the five steps with their commands,
+SLURM, run naming and a quick start.
 
 > Automatic checks validate formats and citation labels. They do not prove
 > that an answer is scientifically correct: that is what the manual review
@@ -54,6 +58,7 @@ data/input/           arXiv id lists (corpora)
 data/questions/       questions files: questions + expected answers, one file per evaluation set
 docs/outputs_index.md versioned list of all runs in outputs/
 outputs/              run directories (not versioned)
+KamiKnows_pipeline.pdf  slides: visual version of this README
 ```
 
 Run every command from the repository root.
