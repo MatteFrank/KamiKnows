@@ -3,10 +3,10 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
-outputs/
 
-# Generated KnowKami outputs
-outputs/*.jsonl
+# Run directories are not versioned; docs/outputs_index.md records them
+outputs/
+outputs_backup/
 
 # OS/editor
 .DS_Store
