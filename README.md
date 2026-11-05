@@ -191,6 +191,10 @@ python scripts/retrieve.py \
   --output-dir outputs/retrieval_semantic_fd100_nobm_dense_explicit_paired_top5 \
   --retriever dense --top-k 5
 ```
+Probably you will need to download the model with
+```
+python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
+```
 
 | Option | Values |
 |---|---|

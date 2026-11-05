@@ -1,8 +1,7 @@
 """Step 1 - parse: download arXiv LaTeX sources and extract sections and equations.
 
 Example:
-    python scripts/parse.py --ids-file data/input/arxiv_ids_fastCalo_5fulltext.txt \\
-        --output-dir outputs/parsed_fastcalo
+    python scripts/parse.py --ids-file data/input/arxiv_ids_fastCalo_5fulltext.txt --output-dir outputs/parsed_fastcalo
 """
 
 import argparse
