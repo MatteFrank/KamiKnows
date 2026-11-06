@@ -49,12 +49,12 @@ kamiknows/            library, one module per step
   review.py           manual review sheet
   embeddings.py       sentence-transformers encoder (shared by chunking and retrieval)
   common.py           JSON I/O and run manifests (shared by all steps)
-  kamiplotextractor/   independent LaTeX figure inventory (Task 01)
+  kamiplotextractor/   figure inventory and metadata classification (Tasks 01–02)
 scripts/              one command per step (thin wrappers around kamiknows/)
   parse.py  chunk.py  retrieve.py  generate.py  review.py
   chat.py             interactive terminal chat
   index_outputs.py    regenerates docs/outputs_index.md
-  extract_plots.py    inventories figures from an existing parse run
+  extract_plots.py    inventories figures or classifies an existing inventory
   run_ollama.slurm    runs any command on a GPU node with its own Ollama server
 tests/                offline tests (no network, no Ollama, no models)
 data/input/           arXiv id lists (corpora)
@@ -335,6 +335,7 @@ retrieval_<chunker>_<retriever>_<sources>_<evalset>_top<k>[_<variant>]
 qa_<chunker>_<retriever>_<sources>_<model>_<evalset>_top<k>[_<variant>]
 review_<what is reviewed>
 figures_<corpus>_inventory_v1
+figures_<corpus>_classified_v1
 ```
 
 | Field | Values |
@@ -348,7 +349,8 @@ figures_<corpus>_inventory_v1
 | variant | the one thing that differs from the baseline, e.g. `synthesis`, `np512` |
 
 Figure inventories use `inventory` for the mode and `v1` for inventory schema 1.0;
-the corpus tag follows the same vocabulary (`fastcalo`). Retries append `_retry<N>`.
+classified runs use `classified_v1` for classification rules v1, with schema 1.1.
+The corpus tag follows the same vocabulary (`fastcalo`). Retries append `_retry<N>`.
 
 ## Outputs index
 
@@ -444,8 +446,27 @@ unsafe or ambiguous asset references remain in the inventory with structured
 warnings. Source assets and previous run directories are never modified.
 After a run, add an outputs-index note and run `python scripts/index_outputs.py`.
 
-A **figure is not necessarily a plot**. Every figure is provisionally `unknown`;
-classification, numerical extraction and digitization are not implemented.
+Task 02 classifies a saved inventory using conservative textual rules:
+
+```bash
+python scripts/extract_plots.py \
+  --inventory-dir outputs/figures_fastcalo_inventory_v1 \
+  --output-dir outputs/figures_fastcalo_classified_v1 \
+  --mode classify
+```
+
+It writes the same five filenames with schema 1.1, preserving IDs, hashes and
+provenance. It validates the inventory manifest and schema without reopening the
+parse tree or graphics. `FigureClassifier` and `run_classification` are importable
+Python APIs. Previous inventory results remain unchanged in schema 1.0.
+
+A **figure is not necessarily a plot**. Inventory leaves figures `unknown`;
+classification assigns `generic`, `plot`, `mixed` or `unknown`, records explicit
+caption evidence and contradictions, and aggregates separately classified panels.
+Filenames alone cannot decide a class; ambiguous cases remain unknown. Confidence
+is null and every result awaits manual review. Layout cues may flag future visual
+panel detection, but no new panels or image regions are invented.
+Numerical extraction and digitization are not implemented.
 The planned `auto`, `pymupdf`, `plotdigitizer`, `chartdetective` and `plotsift`
 backends are all deferred; the interactive tools will need validated import/export
 workflows, not assumed automation APIs. Automatic inventory checks do not establish

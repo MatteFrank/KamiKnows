@@ -1,6 +1,7 @@
 """Offline inventory fixtures exercise provenance, containment and partial failures."""
 
 import hashlib
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -9,7 +10,8 @@ import pytest
 
 from kamiknows import parsing
 from kamiknows.common import read_json, read_jsonl, read_manifest, write_json, write_jsonl, write_manifest
-from kamiknows.kamiplotextractor import FigureExtractor, run_inventory
+from kamiknows.kamiplotextractor import (FigureClassifier, FigureExtractor, FigureRecord, PanelRecord,
+                                      run_classification, run_inventory)
 from kamiknows.kamiplotextractor.latex import scan
 
 PAPER_ID = "1111_00001v1"
@@ -373,3 +375,265 @@ def test_multiple_captions_and_graphicspath_macro_are_visible(inventory_run, tmp
     assert figures[0]["caption"] == "First" and len(figures[0]["captions"]) == 2
     assert figures[0]["latex_labels"] == ["one", "two"]
     assert {"multiple_captions", "unresolved_macro"} <= summary["diagnostic_counts"].keys()
+
+
+# Task 02 uses synthetic metadata, not image recognition or scientific ground truth.
+@pytest.fixture
+def classification_figure():
+    return FigureRecord(
+        paper_id=PAPER_ID, figure_id=f"{PAPER_ID}::figure::0001", caption=None, caption_raw=None,
+        latex_label=None, section_id="sec_001", source_assets=[{
+            "asset_id": "asset_01", "reference": "histogram.pdf", "path": None,
+            "panel_id": None, "sha256": None, "status": "unresolved"}],
+        source_hashes={}, panels=[], provenance={"manual_review": "pending"})
+
+
+@pytest.mark.parametrize("caption,category,plot_type", [
+    ("Histogram of the signal and background.", "plot", "histogram"),
+    ("Scatter plot of reconstructed and true energy.", "plot", "scatter"),
+    ("Energy distribution with statistical error bars.", "plot", "unknown"),
+    ("ROC curve for the classifier.", "plot", "curve"),
+    ("Detector schematic with a colour scale.", "generic", None),
+    ("Experimental setup diagram.", "generic", None),
+    ("Photograph of the ATLAS detector.", "generic", None),
+    ("Event display with coloured tracks and an energy scale.", "generic", None),
+    ("Architecture diagram of the generative model.", "generic", None),
+    ("Processing workflow.", "generic", None),
+    ("Transverse momentum distribution.", "plot", "unknown"),
+    ("Invariant mass spectrum.", "plot", "unknown"),
+    ("Efficiency versus transverse momentum.", "plot", "curve"),
+    ("Resolution as a function of energy.", "plot", "curve"),
+    ("Data/MC ratio.", "plot", "ratio"),
+    ("Uncertainty band.", "plot", "other"),
+    ("Heatmap of energy deposits.", "plot", "heatmap"),
+    (None, "unknown", None),
+    ("Data distribution from the model simulation in the calorimeter figure.", "unknown", None),
+    ("Histogram and detector schematic.", "unknown", None),
+    ("An event display with a heatmap.", "unknown", None),
+    ("Not a histogram.", "unknown", None),
+    ("Histogram without an uncertainty band.", "plot", "histogram"),
+    ("Particles scatter in the calorimeter.", "unknown", None),
+    ("Histogram. This is not a histogram.", "unknown", None),
+])
+def test_text_classification_rules(classification_figure, caption, category, plot_type):
+    classification_figure.caption = caption
+    before = classification_figure.to_dict()
+    figure, panels = FigureClassifier().classify(classification_figure, [])
+    assert figure.figure_type == category and panels == []
+    assert figure.classification_evidence["plot_type"] == plot_type
+    assert figure.classification_confidence is None
+    assert figure.classification_review_status == "pending"
+    assert figure.schema_version == "1.1" and figure.classification_method == "text_rules_v1"
+    assert classification_figure.to_dict() == before
+    assert figure.provenance == before["provenance"] and figure.source_assets == before["source_assets"]
+    if category != "unknown":
+        assert any(i["decisive"] and i["polarity"] == "positive" for i in figure.classification_evidence["indicators"])
+
+
+@pytest.mark.parametrize("word", ["data", "distribution", "model", "simulation", "figure", "calorimeter"])
+def test_weak_words_and_filenames_never_decide(classification_figure, word):
+    classification_figure.caption = word
+    classification_figure.latex_label = "fig:roc_curve"
+    figure, _ = FigureClassifier().classify(classification_figure, [])
+    assert figure.figure_type == "unknown"
+    assert figure.classification_evidence["indicators"]
+    assert all(not i["decisive"] for i in figure.classification_evidence["indicators"])
+
+
+def test_raw_caption_fallback_and_filename_conflict(classification_figure):
+    classification_figure.caption_raw = r"\textbf{ROC curve} for the model. % detector schematic"
+    classification_figure.source_assets[0]["reference"] = "detector_schematic.png"
+    figure, _ = FigureClassifier().classify(classification_figure, [])
+    assert figure.figure_type == "plot"
+    assert figure.classification_evidence["contradictory_indicators"] == []
+    assert any(i["source"] == "caption_raw" and i["rule"] == "roc" for i in figure.classification_evidence["indicators"])
+
+
+def test_multiple_saved_captions_are_all_considered(classification_figure):
+    classification_figure.caption = "Histogram."
+    classification_figure.captions = [{"normalized": "Histogram.", "raw": "Histogram."},
+                                      {"normalized": "Photograph of detector.", "raw": "Photograph of detector."}]
+    result, _ = FigureClassifier().classify(classification_figure, [])
+    assert result.figure_type == "unknown"
+    assert result.classification_evidence["contradictory_indicators"]
+
+
+def test_conflict_summary_diagnostics_and_global_caption_priority(inventory_run, tmp_path):
+    run, _ = inventory_run(r"""\begin{figure}\caption{Histogram and detector schematic}\end{figure}
+\begin{figure}\subfloat[Photograph]{\includegraphics{a.png}}
+\caption{Histogram}\end{figure}""", ["a.png"])
+    inventory(run, tmp_path)
+    summary = run_classification(inventory_dir=tmp_path / "inventory", output_dir=tmp_path / "classified")
+    figures = read_jsonl(tmp_path / "classified" / "figures.jsonl")
+    assert [f["figure_type"] for f in figures] == ["unknown", "generic"]
+    assert summary["contradictory_figures"] == [f["figure_id"] for f in figures]
+    assert summary["diagnostic_counts"]["classification_conflict"] == 2
+    diagnostics = read_jsonl(tmp_path / "classified" / "diagnostics.jsonl")
+    assert any(d["origin_mode"] == "inventory" for d in diagnostics)
+    assert all(d["schema_version"] == "1.1" for d in diagnostics)
+
+
+@pytest.mark.parametrize("captions,expected", [
+    (["Histogram", "ROC curve"], "plot"),
+    (["Histogram", "Detector schematic"], "mixed"),
+    (["Photograph", "Experimental setup diagram"], "generic"),
+    (["Histogram", "Simulation"], "unknown"),
+    ([None, None], "unknown"),
+    (["Histogram", "Detector schematic", None], "mixed"),
+    (["Histogram", "Scatter plot and detector diagram"], "unknown"),
+])
+def test_panel_specific_evidence_and_aggregation(classification_figure, captions, expected):
+    classification_figure.caption = "Histogram of all distributions."
+    panels = [PanelRecord(
+        panel_id=f"panel_{i}", figure_id=classification_figure.figure_id, paper_id=PAPER_ID,
+        panel_label=None, source_region={"kind": "latex_span", "image_region": None},
+        source_asset_ids=[], caption=caption, caption_raw=None, latex_labels=[])
+        for i, caption in enumerate(captions)]
+    classification_figure.panels = [p.panel_id for p in panels]
+    figure, results = FigureClassifier().classify(classification_figure, panels)
+    assert figure.figure_type == expected
+    assert [p.panel_id for p in results] == classification_figure.panels
+    assert all(p.schema_version == "1.1" and p.classification_confidence is None for p in results)
+    for result, caption in zip(results, captions):
+        if caption in {None, "Simulation"}:
+            assert result.panel_type == "unknown" and result.plot_type is None
+    assert all(p.panel_type == "unknown" for p in panels)
+    assert figure.classification_evidence["reason"] == "explicit_panel_aggregation"
+
+
+def test_conflicting_panel_types_are_not_forced(classification_figure):
+    classification_figure.panels = ["panel_1"]
+    panel = PanelRecord("panel_1", classification_figure.figure_id, PAPER_ID, None, {}, [],
+                        "Histogram and scatter plot.", None, [])
+    figure, panels = FigureClassifier().classify(classification_figure, [panel])
+    assert figure.figure_type == "plot" and panels[0].plot_type == "unknown"
+
+
+def test_explicit_mixed_panels_resolve_global_content_conflict(classification_figure):
+    classification_figure.caption = "Histogram and detector schematic."
+    classification_figure.panels = ["left", "right"]
+    panels = [PanelRecord(identifier, classification_figure.figure_id, PAPER_ID, None, {}, [], caption, None, [])
+              for identifier, caption in (("left", "Histogram"), ("right", "Detector schematic"))]
+    result, _ = FigureClassifier().classify(classification_figure, panels)
+    assert result.figure_type == "mixed"
+    assert result.classification_evidence["contradictory_indicators"] == []
+
+
+def test_multiasset_and_ratio_candidates_do_not_create_panels(classification_figure):
+    classification_figure.caption = "Histogram, with a Data/MC ratio in the lower panel."
+    classification_figure.source_assets.append({"asset_id": "asset_02", "reference": "diagram.png"})
+    figure, panels = FigureClassifier().classify(classification_figure, [])
+    assert figure.figure_type == "plot" and panels == [] and figure.panels == []
+    assert figure.classification_evidence["visual_panel_detection_reasons"] == [
+        "multiple_assets_without_explicit_panels", "panel_layout_mentioned_without_explicit_panels"]
+
+
+def test_classify_inventory_v1_preserves_inputs_ids_hashes_and_order(inventory_run, tmp_path, monkeypatch):
+    import kamiknows.kamiplotextractor.inventory as module
+
+    run, root = inventory_run(r"""\begin{figure}
+\subfloat[Histogram]{\includegraphics{a.pdf}}
+\subfloat[Detector schematic]{\includegraphics{b.png}}
+\caption{Combined figure}\end{figure}
+\begin{figure}\includegraphics{a.pdf}\caption{Simulation data}\end{figure}""", ["a.pdf", "b.png"])
+    inventory(run, tmp_path)
+    source = tmp_path / "inventory"
+    original = {p: p.read_bytes() for p in source.iterdir()}
+    source_assets = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    old_figures, old_panels = read_jsonl(source / "figures.jsonl"), read_jsonl(source / "panels.jsonl")
+    assert all("classification_evidence" not in f for f in old_figures)
+    assert all("classification_method" not in p for p in old_panels)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("classify must not scan LaTeX or re-extract figures")
+
+    monkeypatch.setattr(module, "scan", forbidden)
+    monkeypatch.setattr(module.FigureExtractor, "extract", forbidden)
+    summary = run_classification(inventory_dir=source, output_dir=tmp_path / "classified")
+    run_classification(inventory_dir=source, output_dir=tmp_path / "classified_repeat")
+    for filename in ("figures.jsonl", "panels.jsonl", "figure_summary.json", "diagnostics.jsonl"):
+        assert (tmp_path / "classified" / filename).read_bytes() == (tmp_path / "classified_repeat" / filename).read_bytes()
+    figures = read_jsonl(tmp_path / "classified" / "figures.jsonl")
+    panels = read_jsonl(tmp_path / "classified" / "panels.jsonl")
+    for before, after in zip([*old_figures, *old_panels], [*figures, *panels]):
+        for key in ("paper_id", "figure_id", "panel_id", "source_assets", "source_hashes", "provenance", "source_region"):
+            if key in before:
+                assert after[key] == before[key]
+        assert after["schema_version"] == "1.1"
+        assert not {"points", "bins", "uncertainties", "axes"} & after.keys()
+    assert summary["figure_type_counts"] == {"mixed": 1, "unknown": 1}
+    assert summary["panel_type_counts"] == {"plot": 1, "generic": 1}
+    assert summary["review_required"] == {"figures": 2, "panels": 2}
+    assert summary["unknown_figures"] == [figures[1]["figure_id"]]
+    assert summary["mixed_figures"] == [figures[0]["figure_id"]]
+    manifest = read_manifest(tmp_path / "classified", "extract_plots")
+    assert manifest["params"]["mode"] == "classify" and manifest["params"]["schema_version"] == "1.1"
+    assert manifest["summary"] == summary
+    assert len(manifest["inputs"]) == 5
+    for entry in manifest["inputs"].values():
+        assert entry["sha256"] == hashlib.sha256(Path(entry["path"]).read_bytes()).hexdigest()
+    assert original == {p: p.read_bytes() for p in original}
+    assert source_assets == {p: p.read_bytes() for p in source_assets}
+
+
+@pytest.mark.parametrize("fault", ["schema", "mode", "step", "record_schema", "duplicate", "caption_type",
+                                      "missing_panels", "missing_field", "bad_asset", "counts", "summary"])
+def test_classify_rejects_invalid_inventory_before_output(inventory_run, tmp_path, fault):
+    run, _ = inventory_run(r"\begin{figure}\caption{Histogram}\end{figure}")
+    inventory(run, tmp_path)
+    source = tmp_path / "inventory"
+    manifest = read_json(source / "manifest.json")
+    figures = read_jsonl(source / "figures.jsonl")
+    if fault == "schema":
+        manifest["params"]["schema_version"] = "9.0"
+    elif fault == "mode":
+        manifest["params"]["mode"] = "classify"
+    elif fault == "step":
+        manifest["step"] = "parse"
+    elif fault == "record_schema":
+        figures[0]["schema_version"] = "1.1"
+    elif fault == "duplicate":
+        figures.append(figures[0])
+    elif fault == "caption_type":
+        figures[0]["caption"] = ["Histogram"]
+    elif fault == "missing_panels":
+        figures[0]["panels"] = ["missing"]
+    elif fault == "missing_field":
+        del figures[0]["section_id"]
+    elif fault == "bad_asset":
+        figures[0]["source_assets"] = [None]
+    elif fault == "counts":
+        figures = []
+    elif fault == "summary":
+        manifest["summary"]["figures"] = 42
+    write_json(source / "manifest.json", manifest)
+    (source / "figures.jsonl").write_text("".join(json.dumps(f) + "\n" for f in figures))
+    with pytest.raises(ValueError):
+        run_classification(inventory_dir=source, output_dir=tmp_path / "bad")
+    assert not (tmp_path / "bad").exists()
+
+
+def test_classify_empty_inventory_and_no_overwrite(inventory_run, tmp_path):
+    run, _ = inventory_run("No figures.")
+    inventory(run, tmp_path)
+    source = tmp_path / "inventory"
+    summary = run_classification(inventory_dir=source, output_dir=tmp_path / "classified")
+    assert summary["figures"] == summary["panels"] == 0
+    with pytest.raises(FileExistsError):
+        run_classification(inventory_dir=source, output_dir=tmp_path / "classified")
+    with pytest.raises(ValueError, match="inside"):
+        run_classification(inventory_dir=source, output_dir=source / "child")
+
+
+def test_classify_cli_needs_no_parse_tree(inventory_run, tmp_path):
+    run, _ = inventory_run(r"\begin{figure}\caption{ROC curve}\end{figure}")
+    inventory(run, tmp_path)
+    run.rename(tmp_path / "moved_parse_run")
+    command = [sys.executable, "scripts/extract_plots.py", "--inventory-dir", str(tmp_path / "inventory"),
+               "--output-dir", str(tmp_path / "classified"), "--mode", "classify"]
+    result = subprocess.run(command, cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert read_jsonl(tmp_path / "classified" / "figures.jsonl")[0]["figure_type"] == "plot"
+    command[-1] = "inventory"
+    result = subprocess.run(command, cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True)
+    assert result.returncode != 0 and "requires --parsed-dir" in result.stderr

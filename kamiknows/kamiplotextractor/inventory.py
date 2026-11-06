@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +11,7 @@ from kamiknows.parsing import SECTION_LEVELS, SECTION_RE, clean_latex_text
 
 from .assets import SourceTree
 from .latex import PANEL_ENVS, Command, Document, Environment, issue, mask_noncode, scan
-from .records import FigureRecord, PanelRecord
+from .records import CLASSIFIED_SCHEMA_VERSION, FigureRecord, PanelRecord
 
 
 def _inside(command: Command, span: tuple[int, int]) -> bool:
@@ -166,3 +168,145 @@ class FigureExtractor:
             if line.lstrip().startswith("% unresolved input:"):
                 diagnostics.append(issue("unexpanded_input", line.strip(), line_number=line_number))
         return figures, panels, diagnostics, source.inputs
+
+
+# Task 02: deterministic metadata rules. Asset resolution and numeric extraction
+# are intentionally absent from these decisions; text matches are review evidence.
+CLASSIFICATION_METHOD = "text_rules_v1"
+CLASSIFICATION_RULES = (
+    ("histogram", "plot", "histogram", r"\bhistograms?\b"),
+    ("scatter", "plot", "scatter", r"\bscatter\s+plots?\b"),
+    ("roc", "plot", "curve", r"\b(?:roc|receiver operating characteristic)\s+curves?\b"),
+    ("heatmap", "plot", "heatmap", r"\bheat\s*maps?\b"),
+    ("momentum_distribution", "plot", "unknown", r"\b(?:transverse momentum|p\s*t)\s+distributions?\b"),
+    ("mass_spectrum", "plot", "unknown", r"\binvariant mass\s+(?:spectr(?:um|a)|distributions?)\b"),
+    ("efficiency_curve", "plot", "curve", r"\befficienc(?:y|ies)\s+(?:versus|vs\.?|as a function of)\b"),
+    ("resolution_curve", "plot", "curve", r"\bresolution\s+(?:versus|vs\.?|as a function of)\b"),
+    ("data_mc_ratio", "plot", "ratio", r"\bdata\s*(?:/|to|over)\s*mc\s+ratios?\b"),
+    ("uncertainty_band", "plot", "other", r"\buncertainty\s+bands?\b"),
+    ("distribution_errors", "plot", "unknown",
+     r"\bdistribution\b[^.;!?]{0,100}\berror\s+bars?\b"),
+    ("detector_diagram", "generic", None,
+     r"\b(?:detector\s+(?:schematic|diagram)|(?:schematic|diagram)\s+(?:view\s+)?of\s+(?:the\s+)?detector)\b"),
+    ("experimental_setup", "generic", None, r"\bexperimental\s+setup\b"),
+    ("photograph", "generic", None, r"\bphotographs?\b"),
+    ("architecture_diagram", "generic", None, r"\barchitecture\s+diagram\b"),
+    ("workflow", "generic", None, r"\b(?:processing\s+workflow|flow\s*chart)\b"),
+    ("event_display", "generic", None, r"\bevent\s+displays?\b"),
+)
+
+
+def _classification_text(value: str, *, raw: bool = False) -> str:
+    if raw:
+        # Normalize only the saved argument: no document scan or macro execution.
+        value = re.sub(r"(?<!\\)%[^\n]*", " ", value)
+        value = clean_latex_text(value)
+    return " ".join(re.sub(r"[_{}$-]", " ", value.lower()).split())
+
+
+def _text_evidence(record: FigureRecord | PanelRecord, assets: list[dict[str, Any]]) -> dict[str, Any]:
+    texts = [("caption", record.caption, False, True), ("caption_raw", record.caption_raw, True, True)]
+    if isinstance(record, FigureRecord):
+        for i, caption in enumerate(record.captions):
+            for field in ("normalized", "raw"):
+                value = caption.get(field)
+                if value and value not in {record.caption, record.caption_raw}:
+                    texts.append((f"captions[{i}].{field}", value, field == "raw", True))
+    labels = list(record.latex_labels)
+    primary = record.latex_label if isinstance(record, FigureRecord) else record.panel_label
+    if primary and primary not in labels:
+        labels.append(primary)
+    texts.extend((f"latex_labels[{i}]", label, False, False) for i, label in enumerate(labels))
+    for i, asset in enumerate(assets):
+        for field in ("reference", "path"):
+            texts.append((f"source_assets[{i}].{field}", asset.get(field), False, False))
+    indicators = []
+    for source, text, raw, decisive in texts:
+        if not text:
+            continue
+        normalized = _classification_text(text, raw=raw)
+        for rule, category, plot_type, pattern in CLASSIFICATION_RULES:
+            for match in re.finditer(pattern, normalized):
+                prefix = re.split(r"[.;!?]", normalized[:match.start()])[-1]
+                negated = bool(re.search(r"\b(?:no|not|without|rather than|instead of)\b(?:\s+\w+){0,3}\s*$", prefix))
+                indicators.append({"rule": rule, "source": source, "match": match.group(),
+                                   "class": category, "plot_type": plot_type,
+                                   "polarity": "negative" if negated else "positive",
+                                   "decisive": decisive})
+    positive = [i for i in indicators if i["decisive"] and i["polarity"] == "positive"]
+    categories = {i["class"] for i in positive}
+    negative = [i for i in indicators if i["decisive"] and i["polarity"] == "negative"]
+    contradictions = list(positive) if len(categories) > 1 else []
+    contradictions.extend(i for i in negative if any(p["rule"] == i["rule"] for p in positive))
+    category = next(iter(categories)) if len(categories) == 1 and not contradictions else "unknown"
+    types = {i["plot_type"] for i in positive if i["class"] == "plot" and i["plot_type"] != "unknown"}
+    plot_type = (next(iter(types)) if len(types) == 1 else "unknown") if category == "plot" else None
+    return {"assigned_class": category, "plot_type": plot_type, "indicators": indicators,
+            "contradictory_indicators": contradictions,
+            "reason": "contradictory_caption_evidence" if contradictions else (
+                "explicit_caption_evidence" if category != "unknown" else "insufficient_caption_evidence")}
+
+
+class FigureClassifier:
+    """Classify copies of inventory records with reviewable, uncalibrated rules."""
+
+    def classify(self, figure: FigureRecord, panels: list[PanelRecord]) -> tuple[FigureRecord, list[PanelRecord]]:
+        if (len({p.panel_id for p in panels}) != len(panels)
+                or set(figure.panels) != {p.panel_id for p in panels}
+                or any(p.figure_id != figure.figure_id or p.paper_id != figure.paper_id for p in panels)):
+            raise ValueError("panel records must match the figure's explicit panel links")
+        figure, panels = deepcopy(figure), deepcopy(panels)
+        for panel in panels:
+            assets = [a for a in figure.source_assets if a["asset_id"] in panel.source_asset_ids]
+            evidence = _text_evidence(panel, assets)
+            panel.panel_type = evidence["assigned_class"]
+            panel.plot_type = evidence["plot_type"]
+            self._annotate(panel, evidence)
+        evidence = _text_evidence(figure, figure.source_assets)
+        if panels:
+            classes = {p.panel_type for p in panels}
+            if {"plot", "generic"} <= classes:
+                category = "mixed"
+            elif classes == {"plot"}:
+                category = "plot"
+            elif classes == {"generic"}:
+                category = "generic"
+            else:
+                category = "unknown"
+            evidence["panel_classes"] = [{"panel_id": p.panel_id, "class": p.panel_type} for p in panels]
+            if category == "mixed":
+                # Explicit mixed structure explains opposing affirmative figure
+                # signals; actual negations and panel-local conflicts still matter.
+                evidence["contradictory_indicators"] = [
+                    i for i in evidence["contradictory_indicators"] if i["polarity"] == "negative"]
+            for panel in panels:
+                evidence["contradictory_indicators"].extend(
+                    {**item, "panel_id": panel.panel_id} for item in panel.classification_evidence["contradictory_indicators"])
+            # Specific panel evidence governs aggregation. A conflicting global
+            # caption is retained for review, not copied to each panel.
+            if category in {"plot", "generic"}:
+                evidence["contradictory_indicators"].extend(
+                    i for i in evidence["indicators"] if i["decisive"] and i["polarity"] == "positive"
+                    and i["class"] != category and i not in evidence["contradictory_indicators"])
+            evidence.update(assigned_class=category, reason="explicit_panel_aggregation", plot_type=None)
+        visual_reasons = []
+        if not panels:
+            if len(figure.source_assets) > 1:
+                visual_reasons.append("multiple_assets_without_explicit_panels")
+            captions = _classification_text(" ".join(filter(None, (figure.caption, figure.caption_raw))))
+            if re.search(r"\b(?:main\s*/\s*ratio|(?:ratio|upper|lower|top|bottom|left|right)\s+panels?)\b", captions):
+                visual_reasons.append("panel_layout_mentioned_without_explicit_panels")
+            if evidence["contradictory_indicators"]:
+                visual_reasons.append("conflicting_figure_content_without_explicit_panels")
+        evidence["visual_panel_detection_reasons"] = visual_reasons
+        figure.figure_type = evidence["assigned_class"]
+        self._annotate(figure, evidence)
+        return figure, panels
+
+    @staticmethod
+    def _annotate(record: FigureRecord | PanelRecord, evidence: dict[str, Any]) -> None:
+        record.schema_version = CLASSIFIED_SCHEMA_VERSION
+        record.classification_method = CLASSIFICATION_METHOD
+        record.classification_confidence = None
+        record.classification_evidence = evidence
+        record.classification_review_status = "pending"

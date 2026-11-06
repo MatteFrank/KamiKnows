@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 SCHEMA_VERSION = "1.0"
+CLASSIFIED_SCHEMA_VERSION = "1.1"
 
 
 @dataclass
@@ -28,9 +29,15 @@ class FigureRecord:
     warnings: list[dict[str, Any]] = field(default_factory=list)
     status: str = "success"
     schema_version: str = SCHEMA_VERSION
+    classification_evidence: dict[str, Any] = field(default_factory=dict)
+    classification_review_status: str = "pending"
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        record = asdict(self)
+        if self.schema_version == SCHEMA_VERSION:
+            for key in ("classification_evidence", "classification_review_status"):
+                record.pop(key)
+        return record
 
 
 @dataclass
@@ -48,6 +55,15 @@ class PanelRecord:
     plot_type: str | None = None
     warnings: list[dict[str, Any]] = field(default_factory=list)
     schema_version: str = SCHEMA_VERSION
+    classification_confidence: float | None = None
+    classification_method: str = "not_classified"
+    classification_evidence: dict[str, Any] = field(default_factory=dict)
+    classification_review_status: str = "pending"
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        record = asdict(self)
+        if self.schema_version == SCHEMA_VERSION:
+            for key in ("classification_confidence", "classification_method",
+                        "classification_evidence", "classification_review_status"):
+                record.pop(key)
+        return record
