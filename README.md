@@ -275,6 +275,7 @@ python scripts/chat.py --dataset-dir outputs/chunks_fastcalo_semantic_fd100_nobm
   --retriever dense --model qwen3:4b-instruct --base-url http://127.0.0.1:11434
 ```
 
+
 The chat needs a running Ollama server. On the cluster, open an interactive
 GPU session and start the shared server first:
 
