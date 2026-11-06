@@ -36,6 +36,7 @@ SLURM, run naming and a quick start.
 13. [Questions files](#questions-files)
 14. [Tests](#tests)
 15. [Models and licenses](#models-and-licenses)
+16. [KamiPlotExtractor: figure inventory](#kamiplotextractor-figure-inventory)
 
 ## Repository layout
 
@@ -48,10 +49,12 @@ kamiknows/            library, one module per step
   review.py           manual review sheet
   embeddings.py       sentence-transformers encoder (shared by chunking and retrieval)
   common.py           JSON I/O and run manifests (shared by all steps)
+  kamiplotextractor/   independent LaTeX figure inventory (Task 01)
 scripts/              one command per step (thin wrappers around kamiknows/)
   parse.py  chunk.py  retrieve.py  generate.py  review.py
   chat.py             interactive terminal chat
   index_outputs.py    regenerates docs/outputs_index.md
+  extract_plots.py    inventories figures from an existing parse run
   run_ollama.slurm    runs any command on a GPU node with its own Ollama server
 tests/                offline tests (no network, no Ollama, no models)
 data/input/           arXiv id lists (corpora)
@@ -330,6 +333,7 @@ chunks_<corpus>_<chunker>[_<variant>]
 retrieval_<chunker>_<retriever>_<sources>_<evalset>_top<k>[_<variant>]
 qa_<chunker>_<retriever>_<sources>_<model>_<evalset>_top<k>[_<variant>]
 review_<what is reviewed>
+figures_<corpus>_inventory_v1
 ```
 
 | Field | Values |
@@ -341,6 +345,9 @@ review_<what is reviewed>
 | model | `qwen06b`, `qwen4b`, `mistral7b`, ... |
 | evalset | short tag of the questions file: `paired` = `data/questions/fastcalo_paired.jsonl` |
 | variant | the one thing that differs from the baseline, e.g. `synthesis`, `np512` |
+
+Figure inventories use `inventory` for the mode and `v1` for inventory schema 1.0;
+the corpus tag follows the same vocabulary (`fastcalo`). Retries append `_retry<N>`.
 
 ## Outputs index
 
@@ -414,3 +421,34 @@ fake Ollama cover every step from parsing to the review summary.
 | `intfloat/e5-small-v2` (optional) | dense retrieval | MIT |
 
 Check the license of any other model before adding it.
+
+## KamiPlotExtractor: figure inventory
+
+Task 01 inventories LaTeX `figure`/`figure*` environments from an existing parse
+run, resolves original local graphics, and records captions, labels, verified
+section IDs, explicit subfigures, layout options and SHA256 hashes. It needs no new
+dependencies or downloads and does not change the RAG pipeline.
+
+```bash
+python scripts/extract_plots.py \
+  --parsed-dir outputs/parsed_fastcalo \
+  --output-dir outputs/figures_fastcalo_inventory_v1 \
+  --mode inventory
+```
+
+The new run contains `figures.jsonl`, `panels.jsonl`, `diagnostics.jsonl`,
+`figure_summary.json` and the standard `manifest.json` (`step: extract_plots`).
+Records use schema 1.0 and deterministic IDs linked to existing paper IDs. Missing,
+unsafe or ambiguous asset references remain in the inventory with structured
+warnings. Source assets and previous run directories are never modified.
+After a run, add an outputs-index note and run `python scripts/index_outputs.py`.
+
+A **figure is not necessarily a plot**. Every figure is provisionally `unknown`;
+classification, numerical extraction and digitization are not implemented.
+The planned `auto`, `pymupdf`, `plotdigitizer`, `chartdetective` and `plotsift`
+backends are all deferred; the interactive tools will need validated import/export
+workflows, not assumed automation APIs. Automatic inventory checks do not establish
+scientific correctness: manual review pending.
+
+See [the module documentation](docs/kamiplotextractor.md) for the Python API,
+versioned output fields, supported LaTeX, safety rules and known limitations.

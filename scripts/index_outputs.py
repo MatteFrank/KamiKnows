@@ -17,6 +17,8 @@ from kamiknows.common import MANIFEST_NAME, read_json
 
 STEPS = {
     "parse": ("Parsed papers", ["timeout_seconds"], ["papers", "status_counts"]),
+    "extract_plots": ("Figure inventories", ["mode", "schema_version"],
+                      ["figures", "panels", "resolved_references", "unresolved_references"]),
     "chunk": ("Chunked datasets", ["chunker", "exclude_backmatter", "target_words", "min_words", "cut_policy"],
               ["chunks"]),
     "retrieve": ("Retrieval runs", ["chunker", "retriever", "embedding_model", "source_policy", "top_k"],
