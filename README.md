@@ -49,12 +49,12 @@ kamiknows/            library, one module per step
   review.py           manual review sheet
   embeddings.py       sentence-transformers encoder (shared by chunking and retrieval)
   common.py           JSON I/O and run manifests (shared by all steps)
-  kamiplotextractor/   figure inventory and metadata classification (Tasks 01–02)
+  kamiplotextractor/   figure inventory, classification and source-data recovery
 scripts/              one command per step (thin wrappers around kamiknows/)
   parse.py  chunk.py  retrieve.py  generate.py  review.py
   chat.py             interactive terminal chat
   index_outputs.py    regenerates docs/outputs_index.md
-  extract_plots.py    inventories figures or classifies an existing inventory
+  extract_plots.py    inventory / classify / recover modes
   run_ollama.slurm    runs any command on a GPU node with its own Ollama server
 tests/                offline tests (no network, no Ollama, no models)
 data/input/           arXiv id lists (corpora)
@@ -336,6 +336,7 @@ qa_<chunker>_<retriever>_<sources>_<model>_<evalset>_top<k>[_<variant>]
 review_<what is reviewed>
 figures_<corpus>_inventory_v1
 figures_<corpus>_classified_v1
+plots_<corpus>_<source-method>_v1
 ```
 
 | Field | Values |
@@ -351,6 +352,8 @@ figures_<corpus>_classified_v1
 Figure inventories use `inventory` for the mode and `v1` for inventory schema 1.0;
 classified runs use `classified_v1` for classification rules v1, with schema 1.1.
 The corpus tag follows the same vocabulary (`fastcalo`). Retries append `_retry<N>`.
+Numerical runs use source-method `native`, `hepdata`, `auto` or `compare`, with
+`v1` denoting recovery implementation v1 and numerical schema 1.2.
 
 ## Outputs index
 
@@ -466,9 +469,35 @@ caption evidence and contradictions, and aggregates separately classified panels
 Filenames alone cannot decide a class; ambiguous cases remain unknown. Confidence
 is null and every result awaits manual review. Layout cues may flag future visual
 panel detection, but no new panels or image regions are invented.
-Numerical extraction and digitization are not implemented.
+Task 03 recovers explicit PGFPlots coordinates/tables and manually mapped HEPData
+submission-format JSON/YAML tables, without digitization:
+
+```bash
+python scripts/extract_plots.py --mode recover \
+  --classified-dir outputs/figures_fastcalo_classified_v1 \
+  --parsed-dir outputs/parsed_fastcalo \
+  --output-dir outputs/plots_fastcalo_native_v1 \
+  --source-method native
+```
+
+`run_recovery(...)` is also importable. The run writes `plot_data.jsonl`,
+`recovery_summary.json`, `diagnostics.jsonl` and `manifest.json`, with numerical
+schema 1.2. Source hashes and upstream identities are checked; relocated parse runs
+are accepted when content matches. Keep the original inventory for hash provenance
+(or locate it with `--inventory-dir` after relocation).
+
+`--source-method hepdata --hepdata-dir /path/to/data` reads an explicit
+`mapping.json`; `--hepdata-map` selects another mapping. Networking is **off** unless
+`--enable-hepdata-network` is passed. JSON/native support needs no new dependency;
+YAML and online table downloads require optional `PyYAML>=6`. `auto` retains native
+and mapped published results; `compare` reports differences only for uniquely
+matched point series with explicit compatible axes and units. Candidate/ambiguous
+links never become recovered scientific vectors. No TeX expressions are executed,
+no uncertainty estimates are invented, and no RAG schemas are changed.
+
 The planned `auto`, `pymupdf`, `plotdigitizer`, `chartdetective` and `plotsift`
-backends are all deferred; the interactive tools will need validated import/export
+digitization backends are all deferred (distinct from recovery's `--source-method auto`);
+the interactive tools will need validated import/export
 workflows, not assumed automation APIs. Automatic inventory checks do not establish
 scientific correctness: manual review pending.
 

@@ -1,4 +1,4 @@
-"""Versioned inventory records; numerical extraction is deliberately absent."""
+"""Versioned figure metadata and numerical records with explicit provenance."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from typing import Any
 
 SCHEMA_VERSION = "1.0"
 CLASSIFIED_SCHEMA_VERSION = "1.1"
+NUMERICAL_SCHEMA_VERSION = "1.2"
 
 
 @dataclass
@@ -67,3 +68,28 @@ class PanelRecord:
                         "classification_evidence", "classification_review_status"):
                 record.pop(key)
         return record
+
+
+@dataclass
+class PlotDataRecord:
+    paper_id: str | None
+    figure_id: str | None
+    panel_id: str | None
+    data_id: str
+    source_method: str
+    association: dict[str, Any]
+    classification: dict[str, Any]
+    provenance: dict[str, Any]
+    extraction_status: str = "unavailable"
+    backend: str = "native"
+    backend_version: str = "1"
+    axes: dict[str, Any] = field(default_factory=dict)
+    series: list[dict[str, Any]] = field(default_factory=list)
+    raw_source: dict[str, Any] = field(default_factory=dict)
+    warnings: list[dict[str, Any]] = field(default_factory=list)
+    validation_status: str = "not_validated"
+    review_status: str = "pending"
+    schema_version: str = NUMERICAL_SCHEMA_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

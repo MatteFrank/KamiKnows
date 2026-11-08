@@ -1,4 +1,4 @@
-# KamiPlotExtractor — Tasks 01 and 02
+# KamiPlotExtractor — Tasks 01–03
 
 KamiPlotExtractor inventories figures in **existing local parse runs**. It is a
 separate importable package at `kamiknows/kamiplotextractor/`. Task 01 does not
@@ -7,6 +7,8 @@ A figure may contain a plot, a diagram, several plots, or a mixture: inventory
 records start with type `unknown`. Task 02 classifies saved metadata in a separate
 run, without inspecting images. A resolved image reference is not evidence
 of a successful numerical extraction or of scientific correctness.
+Task 03 recovers explicitly linked native PGFPlots data and mapped HEPData tables.
+It performs no raster/vector digitization and does not modify RAG chunks.
 
 ## Running
 
@@ -30,14 +32,17 @@ python scripts/extract_plots.py \
 
 The inventory remains schema `1.0`; classified output uses schema `1.1`. The
 `classified_v1` run tag denotes the first classification rule set, not schema 1.0.
-`--parsed-dir` is required only for inventory, `--inventory-dir` only for classify;
-the arguments are mutually exclusive. No new dependencies, downloads, external
-executables, models, TeX compilation or cloud services are needed. Use a new
+`--parsed-dir` is required for inventory and recovery; `--inventory-dir` is required
+for classify and can locate relocated inventory provenance during recovery.
+Inventory/classify need no new dependencies, downloads, external executables,
+models, TeX compilation or cloud services. Recovery is offline by default; YAML
+support uses optional PyYAML and online HEPData downloads require an explicit flag.
+Use a new
 directory for every run, adding `_retry1`, `_retry2`, etc. when necessary. Output
 inside the input run is rejected. Existing outputs and original assets are
 never modified or copied over.
 
-After a real inventory or classification run, add a note to `docs/outputs_index_notes.json`, identifying
+After a real inventory, classification or recovery run, add a note to `docs/outputs_index_notes.json`, identifying
 the baseline or stating that this is the first inventory, and run:
 
 ```bash
@@ -228,23 +233,20 @@ alongside the inventory for later reuse.
 Task 02 implements only the textual classification described below. Automatic graphical
 panel segmentation, `\captionof` figures outside floats, arbitrary wrapper macros,
 TeX expansion/catcode changes, conditional execution, custom graphic extension
-rules, TikZ/PGFPlots data extraction, HEPData, original CSV/DAT/ROOT extraction,
-numerical validation, plot reconstruction, compare mode and RAG chunk enrichment
+rules, arbitrary TikZ expressions, ROOT parsing, plot reconstruction, scientific
+validation and RAG chunk enrichment
 are not implemented.
 Bare `\subcaption` without a supported explicit panel does not establish a crop or
 panel boundary. Exact source provenance can remain ambiguous because the existing
 parse step provides no source map; this is surfaced, not repaired by guessing.
 
-No numerical `PlotDataRecord` is emitted in either task. The future numerical schema
-will link `paper_id`, `figure_id`, `panel_id` and include `source_method`, `backend`,
-`backend_version`, `axes`, `units`, `series`, `points`, `bins`, `uncertainties`,
-`digitization_quality`, `validation_status`, and `provenance`. Its source method must
-distinguish `original_source_data`, `original_published_data`,
-`vector_reconstructed`, `raster_digitized`, and `unavailable`. Unrecoverable values
-must be null; experimental uncertainties must remain separate from digitization
-errors. An unresolved image reference does not produce fabricated numerical data.
+No numerical `PlotDataRecord` is emitted by inventory/classify. Recovery emits
+schema 1.2 records described below. Vector reconstruction and raster digitization
+remain deferred. Unrecoverable values remain null; experimental uncertainties
+are never replaced with digitization errors. An unresolved image reference does
+not produce fabricated numerical data.
 
-Planned backend choices, **none implemented or required by Tasks 01–02**:
+Planned digitization backend choices, **none implemented or required by Tasks 01–03**:
 
 | Backend | Intended boundary |
 |---|---|
@@ -403,7 +405,259 @@ negation is a heuristic, not a language parser. Filename hints, colour scales an
 caption layout cues cannot establish a visual panel boundary or recover an axis.
 Visual inspection is needed for unlabeled panels, main/ratio regions inside one
 asset, ambiguous plot subtypes, and contradictions between caption and image.
-There is no VLM, image segmentation, numerical extraction or backend integration.
+Classification itself performs no numerical extraction. There is no VLM, image
+segmentation or digitization backend integration.
+
+## Task 03: original numerical sources
+
+The one new module, `source_data.py`, separates numerical parsers, HEPData import,
+bounded downloading and conservative comparisons from inventory/classification.
+Its interfaces are `recover_native`, `parse_hepdata_table`, `recover_hepdata`,
+`load_hepdata_mapping`, `fetch_hepdata` and `compare_sources`. `pipeline.py` handles
+upstream validation and writing through the existing common manifest helpers.
+`records.py` adds `PlotDataRecord` and `NUMERICAL_SCHEMA_VERSION = "1.2"`.
+
+```bash
+python scripts/extract_plots.py --mode recover \
+  --classified-dir outputs/figures_fastcalo_classified_v1 \
+  --parsed-dir outputs/parsed_fastcalo \
+  --output-dir outputs/plots_fastcalo_native_v1 \
+  --source-method native
+```
+
+```python
+from pathlib import Path
+from kamiknows.kamiplotextractor import run_recovery
+
+summary = run_recovery(
+    classified_dir=Path("outputs/figures_fastcalo_classified_v1"),
+    parsed_dir=Path("outputs/parsed_fastcalo"),
+    output_dir=Path("outputs/plots_fastcalo_native_v1"),
+    source_method="native",
+)
+```
+
+Modes are `native` (default), `hepdata`, `auto` and `compare`. `auto` tries native
+sources first and then explicitly mapped HEPData, retaining independent source
+records. `compare` runs both and adds comparison results to the summary. Neither
+mode merges datasets or treats publication identity as figure identity.
+
+### Provenance checks and relocation
+
+Recovery requires classified schema 1.1, its five files, and the original inventory
+schema 1.0. The inventory is located through the classified manifest; pass
+`--inventory-dir` if it has moved. Recovery verifies its five hashes against the
+classification manifest and checks that IDs/source metadata survived classification
+unchanged. It checks the parse manifest and `papers.jsonl` against the inventory
+hashes, then verifies saved flat/sections/source-file hashes per paper.
+
+A relocated parse run is accepted by content hashes and paper identities: original
+absolute paths are not required. The historical inventory is still required because
+it holds the original source hashes. Missing lineage or global identity mismatches
+fail before output creation. Per-paper source mismatches produce unavailable
+records and errors while other papers continue. Additional explicitly referenced
+data files, which Task 01 did not hash, are hashed as read during recovery; this
+records the current source snapshot rather than independently authenticating it.
+
+### Native subset
+
+The focused numerical scanner works on `latex.scan()`'s masked text and uses its
+balanced argument parser and environment spans; existing scan results are unchanged.
+Literal plot commands inside known figures establish the link. Subfigure ownership
+uses the innermost explicit panel span. Plot/mixed figures are eligible; unknown
+figures require explicit numerical structure. Generic figures and generic panels
+are skipped unless `--include-generic` is supplied. Successful extraction never
+changes figure/panel classification.
+
+Supported examples (synthetic values):
+
+```latex
+\begin{axis}[xlabel={Energy},ylabel={Counts},x unit={GeV},xmode=log]
+  \addplot coordinates {(1,2) (2,4e-3) (3,8)};
+  \addlegendentry{Signal}
+  \addplot table[x=energy,y=counts]{tables/data.dat};
+  \addplot table[col sep=comma,x index=0,y index=2]{tables/data.csv};
+\end{axis}
+```
+
+The subset includes `axis`, `loglogaxis`, `semilogxaxis`, `semilogyaxis`, literal
+decimal/scientific coordinates, `\addplot+`, named/indexed table columns, inline
+tables with newline or explicit `row sep=\\`, and external CSV/DAT/TXT files.
+Comma-separated input requires `col sep=comma`; filename extensions do not change
+PGFPlots' whitespace default. Tab and semicolon separators are also supported.
+Header detection accepts a wholly textual header or wholly numeric first row;
+mixed first rows are rejected unless header behavior is explicitly specified.
+
+With no x/y selectors, the documented first/second columns are used and recorded
+as `columns.default_first_two: true`. If any selector is supplied, both axes must
+be explicitly and unambiguously selected. Empty/ragged tables, duplicate headers,
+missing columns, macros and invalid numeric tokens produce diagnostics. No values
+are guessed and no Poisson errors or bin edges are synthesized.
+
+Multiple commands preserve their source order via `series_index` and share an
+`axis_id`. Each command produces a separate numerical record, so a failed command
+cannot hide a successful adjacent series. A single `\addlegendentry` between that
+command and the next can name the series; an axis `legend entries` list is used
+only when its length matches the number of commands. Uncertain legends stay null.
+Axis labels and explicit `x unit`/`y unit` are retained literally. Units are not
+inferred from physical conventions or parsed out of labels. Unspecified scales
+remain null; explicit modes and log-axis environments supply scale metadata.
+Non-positive values on log axes are rejected rather than silently discarding rows.
+
+Supported table errors use `y error`/`y error index` or paired `y error plus` and
+`y error minus` selectors (including index variants), with explicit PGFPlots
+error-bar options such as `[error bars/.cd,y dir=both,y explicit]`. Relative explicit
+errors retain their relative flag. Raw column names, signs and tokens are retained;
+native lower/upper values are not converted into HEPData signed variations.
+Statistical/systematic kinds stay null because table-column names alone do not
+establish that meaning. Coordinate error syntax, x errors, error expressions and
+unsupported error-bar variants are rejected with raw command/options preserved.
+
+External files are resolved only from explicit plot references, relative to matched
+original `.tex` locations and the allowed source roots. Ambiguous source directories
+or multiple matching files cannot produce verified numerical data. Standalone
+`.tex` plots and commands outside known figures remain candidates without promoted
+vectors. An unrelated CSV beside an included image is never linked by filename.
+Absolute paths, URLs, traversal and external symlink targets are rejected.
+
+There is no TeX/gnuplot execution, expression evaluation, ROOT parsing, generic
+data-file discovery, custom style expansion, 3D native extraction or pixel/PDF
+geometry analysis. A conservative visual/metadata option allowlist rejects unknown
+styles and transformations. `\pgfplotsset`/`\tikzset` declarations are accepted only
+for compat/size settings; source conditionals also prevent promotion. Unsupported
+filters/expressions never return untransformed source columns as plotted vectors.
+Direct generic CSV references outside supported plot commands are not supported.
+
+### Offline HEPData mapping and import
+
+Use submission-format JSON or YAML with `independent_variables` and
+`dependent_variables`, as documented by [HEPData](https://hepdata-submission.readthedocs.io/en/latest/data_yaml.html).
+The website's separate visualization JSON format, whole-record archives and
+multi-document submission manifests are not table inputs for this version.
+No directory-wide YAML discovery is performed. Supply a mapping file, or place
+`mapping.json` in `--hepdata-dir`. Relative source files are confined to that directory
+(by default, the mapping file's parent). Replace all placeholders below with actual
+identifiers; table numbering is never equated with figure numbering:
+
+```json
+{
+  "schema_version": "1",
+  "mappings": [{
+    "arxiv_id": "<paper arXiv ID>",
+    "figure_id": "<paper_id>::figure::0001",
+    "record_id": "<numeric HEPData ID or ins-prefixed INSPIRE ID>",
+    "table_name": "<exact published table name>",
+    "source_file": "table.json"
+  }]
+}
+```
+
+`paper_id` may replace or accompany `arxiv_id`; both must agree if present. An arXiv
+version suffix does not change publication identity. `latex_label` may replace or
+accompany `figure_id`; duplicate labels remain ambiguous. Optional `panel_id` must
+belong to the selected figure. A verified association requires a publication,
+exactly one figure, record ID and table name. It means an auditable **explicit user
+mapping**, not automatic expert validation of a caption or observable. Contradictory
+identity metadata inside the table invalidates the mapping. Publication-only,
+ambiguous or unmatched entries remain reviewable with states `candidate`,
+`ambiguous` or `unmatched`; only `verified` associations emit published vectors.
+No LLM or semantic matching is used. Duplicate identical mapping entries are rejected.
+
+```bash
+python scripts/extract_plots.py --mode recover \
+  --classified-dir outputs/figures_fastcalo_classified_v1 \
+  --parsed-dir outputs/parsed_fastcalo \
+  --output-dir outputs/plots_fastcalo_hepdata_v1 \
+  --source-method hepdata --hepdata-dir /path/to/local/hepdata \
+  --hepdata-map /path/to/local/hepdata/mapping.json
+```
+
+The importer preserves all independent/dependent columns, headers, units,
+qualifiers, row order, central values, bin limits, multiple dependent series and
+multiple uncertainty components. Symmetric and asymmetric signed errors, percentage
+notation and labels survive in raw and normalized representations. Only explicit
+`stat`/`statistical` or `sys`/`systematic` labels assign those kinds. Unlabeled errors
+remain unlabeled. Missing, textual and unrepresentable values become null with a
+state and the original token; infinite bin limits remain in raw tokens. No midpoint,
+covariance matrix, uncertainty estimate, interpolation or unit conversion is inferred.
+
+Multidimensional tables retain their full coordinate columns. They are not projected
+to 1D: the `x` and `bins` convenience fields are null when more than one independent
+variable exists. Published binned contents are not individual experimental events,
+and published HEPData measurements are not detector-level raw event data.
+
+### Optional network and dependencies
+
+Networking is disabled by default. To download a **specified table**, omit
+`source_file` in its mapping and pass `--enable-hepdata-network` with `hepdata`,
+`auto` or `compare`. There is no online discovery/search or HTML scraping. The small
+`requests` adapter uses the official client's documented record `format`/`table`
+endpoint, requesting YAML. It permits only HTTPS on `www.hepdata.net`, at most three
+redirects, three attempts, a 10-second connect timeout and 20-second read timeout.
+Both declared and streamed sizes are bounded to 8 MiB. Local numerical/source/table
+reads use the same size limit. Response filenames and archives are never extracted.
+Downloaded text, final URL and SHA256 are retained in the record; no per-table files
+are created. Backend failures remain separate from association/scientific quality.
+
+Native and JSON support add no dependencies. YAML (including online downloads)
+uses optional `PyYAML>=6`, installed separately with `pip install 'PyYAML>=6'`.
+It uses a SafeLoader, retains floating-point tokens as strings before numeric
+conversion, and rejects alias graphs and executable tags. PyYAML is
+[MIT-licensed](https://github.com/yaml/pyyaml/blob/main/LICENSE).
+[hepdata-cli](https://github.com/HEPData/hepdata-cli) was inspected but is not imported
+or installed: it is GPL-3.0 and brings broader search/upload/archive handling that
+is unnecessary here. The adapter uses the existing requests dependency and does
+not copy client implementation code. Preserve any publisher/table-specific data
+license metadata supplied in the raw source; software licenses do not license the
+published measurements themselves.
+
+### Numerical output schema 1.2 and comparisons
+
+Recovery writes exactly `plot_data.jsonl`, `recovery_summary.json`,
+`diagnostics.jsonl`, and `manifest.json` (`step: extract_plots`, `mode: recover`).
+Old inventory/classification files remain unchanged. A `PlotDataRecord` contains:
+
+- Existing `paper_id`, `figure_id`, optional `panel_id`, original classification
+  snapshot, deterministic `data_id` and schema 1.2. Unassociated candidates may have
+  null paper/figure IDs. IDs depend on associated identities and extraction-source
+  locators, not output directory or mapping entry order.
+- `source_method`: `original_source_data`, `original_published_data`,
+  `candidate_data` or `unavailable`; `association` with state and explicit evidence;
+  `extraction_status`: `success`, `partial` or `unavailable`.
+- `backend`, adapter/decoder `backend_version`, `provenance.sources` with paths/URLs
+  and SHA256. Native paths are source-root-relative except the explicitly marked
+  parse-relative flat file. HEPData paths are mapping-root-relative. Network-client
+  version is also recorded. The manifest locates and hashes all read local inputs.
+- `axes`, `series`, `raw_source` and structured `warnings`. Native axes use `x`/`y`
+  objects; published axes retain independent/dependent headers without inventing
+  visual scales. Each series retains its order, identity, label, qualifiers, x/y
+  convenience values, bins and uncertainty components in the source's semantics.
+- Native `raw_values` preserve decimal tokens alongside numeric JSON values. HEPData
+  `value_states`, raw cells, raw error components and the original table retain
+  missing values, signs, percentages and precision. No unnecessary rounding is
+  applied; numeric convenience values can still have normal floating-point limits.
+- `validation_status: structural_checks_passed` only after supported parsing and
+  shape checks, otherwise `not_validated`; `review_status: pending` always.
+
+Candidate/ambiguous associations carry references/raw commands and warnings but no
+promoted vectors. Partial published tables retain explicit nulls. Native parsing
+fails a whole command if a required row/selector/transformation is unsupported,
+while adjacent commands can succeed. Merely writing JSON is not scientific validation.
+
+`--source-method compare` retains independent native and published records. Comparison
+requires a unique nonempty series label, identical explicit axis names/units,
+matching qualifiers, a single independent variable with point coordinates, no
+published bin limits, and exact decimal coordinate equality. No series is paired
+solely by figure ID. Compatible pairs report signed y differences and maximum
+absolute difference using decimal arithmetic; incompatible pairs report
+`not_comparable` and a reason. Uncertainty comparison is explicitly not performed.
+These differences are not accuracy scores, agreement certificates or significance
+tests. The summary separates extraction counts, association states, diagnostics,
+per-paper source verification and comparisons. **Manual review pending.**
+
+The native syntax is grounded in the [PGFPlots coordinate/table documentation](https://tikz.dev/pgfplots/reference-addplot).
+The supported subset intentionally excludes the general transformation and TeX
+capabilities described there.
 
 ## Verification and readiness
 
@@ -417,6 +671,11 @@ aggregation, negation and contradiction handling, v1.0 compatibility, v1.1 outpu
 immutable inputs, standalone classification without the parse tree, and determinism.
 They verify code behavior, not scientific accuracy on real figures.
 
-Classified records provide a metadata boundary for Task 03, subject to manual
-review and the documented textual limitations. Task 03 requires a separate
-instruction; this module is not the completed KamiPlotExtractor project.
+Task 03 tests use exact synthetic coordinates and tables, including source linking,
+negative/scientific values, errors, missing values, multidimensional published data,
+path escapes, mocked network failures, relocation and source-hash mismatches.
+No live network calls or real-paper numerical benchmarks are part of these tests.
+
+Numerical records provide a provenance-preserving input boundary for Task 04,
+subject to the supported subset and manual review. Task 04 has not been started;
+there is no raster/vector digitization and no numerical RAG integration.

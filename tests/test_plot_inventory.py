@@ -11,7 +11,7 @@ import pytest
 from kamiknows import parsing
 from kamiknows.common import read_json, read_jsonl, read_manifest, write_json, write_jsonl, write_manifest
 from kamiknows.kamiplotextractor import (FigureClassifier, FigureExtractor, FigureRecord, PanelRecord,
-                                      run_classification, run_inventory)
+                                      run_classification, run_inventory, run_recovery)
 from kamiknows.kamiplotextractor.latex import scan
 
 PAPER_ID = "1111_00001v1"
@@ -637,3 +637,558 @@ def test_classify_cli_needs_no_parse_tree(inventory_run, tmp_path):
     command[-1] = "inventory"
     result = subprocess.run(command, cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True)
     assert result.returncode != 0 and "requires --parsed-dir" in result.stderr
+
+
+# Task 03: exact synthetic ground truth, with no digitization or live network.
+@pytest.fixture
+def native_fixture(inventory_run, tmp_path):
+    def build(plot, axis_options="", files=None, caption="Transverse momentum distribution", sources=None):
+        body = (r"\begin{figure}\begin{tikzpicture}\begin{axis}" + axis_options + plot
+                + r"\end{axis}\end{tikzpicture}\caption{" + caption + r"}\label{fig:native}\end{figure}")
+        run, root = inventory_run(body, sources=sources)
+        for name, value in (files or {}).items():
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(value)
+        inventory(run, tmp_path)
+        run_classification(inventory_dir=tmp_path / "inventory", output_dir=tmp_path / "classified")
+        figures = [FigureRecord(**f) for f in read_jsonl(tmp_path / "classified" / "figures.jsonl")]
+        panels = [PanelRecord(**p) for p in read_jsonl(tmp_path / "classified" / "panels.jsonl")]
+        return run, root, figures, panels
+    return build
+
+
+def native_extract(run, root, figures, panels):
+    from kamiknows.kamiplotextractor.source_data import recover_native
+    return recover_native(paper_id=PAPER_ID, flat_path=run / "papers" / PAPER_ID / "flat.tex",
+                          source_root=root.parent, figures=figures, panels=panels)
+
+
+def test_native_coordinates_precision_and_multiple_series(native_fixture):
+    run, root, figures, panels = native_fixture(
+        r"\addplot coordinates {(1,2) (-2.5,4e-3) (3,8)};\addlegendentry{Signal}"
+        r"\addplot coordinates {(1,-2E2) (2,0.123456789012345678901)};\addlegendentry{Background}")
+    results, _ = native_extract(run, root, figures, panels)
+    assert len(results) == 2 and all(r.source_method == "original_source_data" for r in results)
+    assert results[0].series[0]["x"] == [1, -2.5, 3]
+    assert results[0].series[0]["y"] == [2, 0.004, 8]
+    assert results[1].series[0]["y"][0] == -200
+    assert results[1].series[0]["raw_values"][1][1] == "0.123456789012345678901"
+    assert [r.series[0]["label"] for r in results] == ["Signal", "Background"]
+    assert [r.series[0]["series_index"] for r in results] == [0, 1]
+    assert all(r.schema_version == "1.2" and r.review_status == "pending" for r in results)
+
+
+@pytest.mark.parametrize("command,files,x,y", [
+    (r"\addplot table[x=energy,y=counts]{data.dat};", {"data.dat": "energy counts\n1 4\n2 8\n"}, [1, 2], [4, 8]),
+    (r"\addplot table[x index=0,y index=2,col sep=comma]{data.csv};",
+     {"data.csv": "energy,unused,counts\n1,42,4\n2,42,8\n"}, [1, 2], [4, 8]),
+    ("\\addplot table[x=energy,y=counts]{\nenergy counts\n1 4\n2 8\n};", {}, [1, 2], [4, 8]),
+    (r"\addplot table[row sep=\\]{1 4\\2 8\\};", {}, [1, 2], [4, 8]),
+    (r"\addplot table{data.dat};", {"data.dat": "1 4\n2 8\n"}, [1, 2], [4, 8]),
+])
+def test_native_tables(native_fixture, command, files, x, y):
+    run, root, figures, panels = native_fixture(command, files=files)
+    results, inputs = native_extract(run, root, figures, panels)
+    record = results[0]
+    assert record.extraction_status == "success", record.warnings
+    assert record.series[0]["x"] == x and record.series[0]["y"] == y
+    assert record.series[0]["uncertainties"] == []
+    assert record.series[0]["columns"]["default_first_two"] == ("x=" not in command and "x index" not in command)
+    if files:
+        assert any(key.startswith("data:") for key in inputs)
+        assert record.provenance["sources"][-1]["sha256"] == hashlib.sha256((root / next(iter(files))).read_bytes()).hexdigest()
+
+
+def test_native_axes_and_symmetric_uncertainty(native_fixture):
+    run, root, figures, panels = native_fixture(
+        r"\addplot[error bars/.cd,y dir=both,y explicit] table[x=energy,y=counts,y error=err]{data.dat};",
+        axis_options=r"[xlabel={Energy},ylabel={Counts},xmode=log,x unit={GeV}]",
+        files={"data.dat": "energy counts err\n1 4 0.2\n2 8 0.5\n"})
+    results, _ = native_extract(run, root, figures, panels)
+    record = results[0]
+    assert record.extraction_status == "success", record.warnings
+    assert record.axes["x"] == {"label": "Energy", "scale": "log", "unit": "GeV"}
+    assert record.axes["y"]["unit"] is None
+    uncertainty = record.series[0]["uncertainties"][0]
+    assert uncertainty["symerror"] == [0.2, 0.5] and uncertainty["columns"] == ["err"]
+    assert uncertainty["kind"] is None and uncertainty["label"] is None
+
+
+@pytest.mark.parametrize("command,files,code", [
+    (r"\addplot table{missing.dat};", {}, "data_file_missing"),
+    (r"\addplot coordinates {(1,nan)};", {}, "invalid_numeric_value"),
+    (r"\addplot coordinates {(1,\value)};", {}, "unresolved_macro"),
+    (r"\addplot {x*x};", {}, "unsupported_expression"),
+    (r"\addplot table[x expr=\thisrow{x}*2,y=y]{data.dat};", {"data.dat": "x y\n1 2\n"}, "unsupported_expression"),
+    (r"\addplot[y filter/.expression={y*2}] coordinates {(1,2)};", {}, "unsupported_transformation"),
+    (r"\addplot table[x=missing,y=y]{data.dat};", {"data.dat": "x y\n1 2\n"}, "ambiguous_columns"),
+    (r"\addplot table{../outside.dat};", {}, "unsafe_path"),
+    (r"\addplot table{data.root};", {}, "unsupported_data_format"),
+])
+def test_native_failures_never_emit_untransformed_vectors(native_fixture, command, files, code):
+    run, root, figures, panels = native_fixture(command, files=files)
+    results, _ = native_extract(run, root, figures, panels)
+    assert results[0].series == [] and results[0].source_method == "unavailable"
+    assert results[0].warnings[0]["code"] == code
+
+
+def test_native_unknown_and_unlinked_candidate(native_fixture):
+    run, root, figures, panels = native_fixture(r"\addplot coordinates {(1,2)};", caption="Simulation",
+        sources={"standalone.tex": r"\begin{axis}\addplot coordinates {(9,99)};\end{axis}"})
+    results, _ = native_extract(run, root, figures, panels)
+    assert figures[0].figure_type == "unknown"
+    assert results[0].classification["figure_type"] == "unknown" and results[0].series[0]["y"] == [2]
+    candidate = next(r for r in results if r.figure_id is None)
+    assert candidate.source_method == "candidate_data" and candidate.association["state"] == "candidate"
+    assert candidate.series == []
+
+
+def test_native_unrelated_csv_and_symlink_escape(native_fixture, tmp_path):
+    run, root, figures, panels = native_fixture(r"\includegraphics{plot.pdf}", files={"unrelated.csv": "x,y\n1,2\n"})
+    results, _ = native_extract(run, root, figures, panels)
+    assert results == []
+    outside = tmp_path / "private.dat"
+    outside.write_text("1 2\n")
+    (root / "alias.dat").symlink_to(outside)
+    from kamiknows.kamiplotextractor.source_data import DataError, _data_path
+    with pytest.raises(DataError, match="outside source root"):
+        _data_path(root.parent, "alias.dat", [root / "main.tex"])
+
+
+@pytest.fixture
+def hepdata_table():
+    return {
+        "independent_variables": [{"header": {"name": "Energy", "units": "GeV"},
+                                   "values": [{"low": 0, "high": 10}, {"low": 10, "high": 20}]}],
+        "dependent_variables": [{"header": {"name": "Signal", "units": "pb"},
+            "qualifiers": [{"name": "SQRT(S)", "value": 13000, "units": "GeV"}],
+            "values": [{"value": 5.5, "errors": [
+                {"symerror": 0.2, "label": "stat"},
+                {"asymerror": {"plus": "5%", "minus": "-3%"}, "label": "sys,calibration"},
+                {"symerror": "-2%"}]}, {"value": "-", "errors": []}]}],
+    }
+
+
+def test_hepdata_errors_bins_missing_and_qualifiers(hepdata_table):
+    from kamiknows.kamiplotextractor.source_data import parse_hepdata_table
+    axes, series, warnings = parse_hepdata_table(hepdata_table)
+    assert axes["independent_variables"] == [{"name": "Energy", "units": "GeV"}]
+    signal = series[0]
+    assert signal["y"] == [5.5, None] and signal["x"] == [None, None]
+    assert signal["bins"][0]["low"] == 0 and signal["bins"][0]["high"] == 10
+    assert signal["value_states"][1] == {"value": None, "raw": "-", "state": "missing"}
+    assert signal["qualifiers"] == hepdata_table["dependent_variables"][0]["qualifiers"]
+    errors = signal["uncertainties"][0]["components"]
+    assert len(errors) == 3
+    assert errors[0]["symerror"]["value"] == 0.2 and errors[0]["kind"] == "statistical"
+    assert errors[1]["asymerror"]["minus"] == {"value": -3, "state": "numeric", "raw": "-3%", "relative": True, "unit": "percent"}
+    assert errors[1]["kind"] == "systematic"
+    assert errors[2]["kind"] is None and errors[2]["symerror"]["value"] == -2
+    assert warnings[0]["code"] == "missing_or_nonnumeric_published_value"
+
+
+def test_hepdata_multidimensional_multiple_variables(hepdata_table):
+    from copy import deepcopy
+    from kamiknows.kamiplotextractor.source_data import parse_hepdata_table
+    hepdata_table["independent_variables"].append({"header": {"name": "Region"}, "values": [{"value": "barrel"}, {"value": "endcap"}]})
+    hepdata_table["dependent_variables"].append(deepcopy(hepdata_table["dependent_variables"][0]))
+    hepdata_table["dependent_variables"][1]["header"]["name"] = "Background"
+    _, series, _ = parse_hepdata_table(hepdata_table)
+    assert [s["label"] for s in series] == ["Signal", "Background"]
+    assert all(s["x"] is None and s["bins"] is None and len(s["independent_variables"]) == 2 for s in series)
+    assert series[0]["independent_variables"][1]["values"][0]["value"]["raw"] == "barrel"
+
+
+@pytest.mark.parametrize("suffix", [".json", ".yaml"])
+def test_hepdata_offline_verified_mapping(native_fixture, tmp_path, hepdata_table, suffix):
+    from kamiknows.kamiplotextractor.source_data import recover_hepdata
+    run, root, figures, panels = native_fixture(r"\addplot coordinates {(1,2)};")
+    directory = tmp_path / "hepdata"
+    directory.mkdir()
+    if suffix == ".yaml":
+        import yaml
+        content = yaml.safe_dump(hepdata_table)
+    else:
+        content = json.dumps(hepdata_table)
+    (directory / ("table" + suffix)).write_text(content)
+    mapping = {"arxiv_id": "1111.00001", "figure_id": figures[0].figure_id,
+               "record_id": "123", "table_name": "Table 7", "source_file": "table" + suffix}
+    records, inputs = recover_hepdata(figures=figures, panels=panels, papers=read_jsonl(run / "papers.jsonl"),
+                                     mappings=[mapping], root=directory)
+    assert len(records) == 1 and records[0].source_method == "original_published_data"
+    assert records[0].association["state"] == "verified" and records[0].figure_id == figures[0].figure_id
+    assert records[0].series[0]["y"] == [5.5, None]
+    assert records[0].extraction_status == "partial" and records[0].review_status == "pending"
+    assert records[0].provenance["sources"][0]["sha256"] == hashlib.sha256(content.encode()).hexdigest()
+    assert inputs["table" + suffix] == directory / ("table" + suffix)
+
+
+@pytest.mark.parametrize("condition,state", [("publication_only", "candidate"), ("wrong_arxiv", "unmatched"),
+                                               ("ambiguous_label", "ambiguous"), ("missing_table_identity", "candidate")])
+def test_hepdata_unverified_links_never_promoted(native_fixture, tmp_path, condition, state):
+    from copy import deepcopy
+    from kamiknows.kamiplotextractor.source_data import recover_hepdata
+    run, _, figures, panels = native_fixture(r"\addplot coordinates {(1,2)};")
+    entry = {"arxiv_id": "1111.00001", "latex_label": "fig:native", "record_id": "123", "table_name": "Table 7"}
+    if condition == "publication_only":
+        del entry["latex_label"]
+    elif condition == "wrong_arxiv":
+        entry["arxiv_id"] = "9999.99999"
+    elif condition == "ambiguous_label":
+        copy = deepcopy(figures[0])
+        copy.figure_id += "_other"
+        figures.append(copy)
+    else:
+        del entry["table_name"]
+    records, _ = recover_hepdata(figures=figures, panels=panels, papers=read_jsonl(run / "papers.jsonl"),
+                                  mappings=[entry], root=tmp_path)
+    assert records[0].association["state"] == state
+    assert all(not r.series and r.source_method != "original_published_data" for r in records)
+
+
+def test_hepdata_missing_mapping_and_network_off(native_fixture, tmp_path):
+    from kamiknows.kamiplotextractor.source_data import recover_hepdata
+    run, _, figures, panels = native_fixture(r"\addplot coordinates {(1,2)};")
+    args = dict(figures=figures, panels=panels, papers=read_jsonl(run / "papers.jsonl"), root=tmp_path)
+    records, _ = recover_hepdata(**args, mappings=[])
+    assert records[0].association["state"] == "unmatched"
+    records, _ = recover_hepdata(**args, mappings=[{"paper_id": PAPER_ID, "figure_id": figures[0].figure_id,
+                                                  "record_id": "123", "table_name": "Table 7"}])
+    assert records[0].warnings[0]["code"] == "network_disabled"
+
+
+def test_hepdata_safe_loader_and_raw_precision():
+    from kamiknows.kamiplotextractor.source_data import DataError, decode_hepdata
+    table, _ = decode_hepdata(b'{"value": 0.123456789012345678901}', ".json")
+    assert table["value"] == "0.123456789012345678901"
+    with pytest.raises(DataError):
+        decode_hepdata(b"!!python/object/apply:os.system ['echo unsafe']", ".yaml")
+    with pytest.raises(DataError, match="aliases"):
+        decode_hepdata(b"a: &value [1, 2]\nb: *value", ".yaml")
+
+
+def test_hepdata_network_failure_is_bounded_and_isolated(native_fixture, tmp_path, monkeypatch):
+    import requests
+    from kamiknows.kamiplotextractor.source_data import recover_hepdata
+    calls = []
+    def failure(url, **kwargs):
+        calls.append((url, kwargs))
+        raise requests.Timeout("mock timeout")
+    monkeypatch.setattr(requests, "get", failure)
+    run, _, figures, panels = native_fixture(r"\addplot coordinates {(1,2)};")
+    records, _ = recover_hepdata(figures=figures, panels=panels, papers=read_jsonl(run / "papers.jsonl"), root=tmp_path,
+                                enable_network=True, mappings=[{"paper_id": PAPER_ID, "figure_id": figures[0].figure_id,
+                                                                "record_id": "123", "table_name": "Table 7"}])
+    assert len(calls) == 3 and all(c[1]["timeout"] == (10, 20) and c[1]["stream"] for c in calls)
+    assert records[0].series == [] and records[0].warnings[0]["code"] == "hepdata_backend_error"
+
+
+@pytest.mark.parametrize("scenario", ["success", "redirect_escape", "oversize", "stream_oversize"])
+def test_hepdata_network_limits(monkeypatch, scenario):
+    import requests
+    import kamiknows.kamiplotextractor.source_data as data
+    class Response:
+        status_code = 302 if scenario == "redirect_escape" else 200
+        headers = {"Location": "https://other.example/table"} if scenario == "redirect_escape" else {
+            "Content-Length": "100" if scenario == "oversize" else "1"}
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def raise_for_status(self):
+            pass
+        def iter_content(self, chunk_size):
+            yield b"x" * (100 if scenario == "stream_oversize" else 1)
+    monkeypatch.setattr(requests, "get", lambda *args, **kwargs: Response())
+    monkeypatch.setattr(data, "MAX_SOURCE_BYTES", 10)
+    if scenario == "success":
+        content, url = data.fetch_hepdata("123", "Table 7")
+        assert content == b"x" and "table=Table+7" in url
+    else:
+        with pytest.raises(data.DataError):
+            data.fetch_hepdata("123", "Table 7")
+
+
+def test_recovery_pipeline_stable_ids_manifest_and_immutable_inputs(native_fixture, tmp_path):
+    run, root, figures, _ = native_fixture(r"\addplot table[x=x,y=y]{data.dat};", files={"data.dat": "x y\n1 2\n2 4\n"})
+    before = {p: p.read_bytes() for directory in (run, tmp_path / "classified", tmp_path / "inventory")
+              for p in directory.rglob("*") if p.is_file()}
+    kwargs = dict(classified_dir=tmp_path / "classified", parsed_dir=run)
+    summary = run_recovery(**kwargs, output_dir=tmp_path / "recovery")
+    run_recovery(**kwargs, output_dir=tmp_path / "repeat")
+    for name in ("plot_data.jsonl", "diagnostics.jsonl", "recovery_summary.json"):
+        assert (tmp_path / "recovery" / name).read_bytes() == (tmp_path / "repeat" / name).read_bytes()
+    data = read_jsonl(tmp_path / "recovery" / "plot_data.jsonl")
+    assert len(data) == 1 and data[0]["figure_id"] == figures[0].figure_id
+    assert data[0]["source_method"] == "original_source_data" and data[0]["series"][0]["y"] == [2, 4]
+    assert summary["recovered_series"] == 1
+    manifest = read_manifest(tmp_path / "recovery", "extract_plots")
+    assert manifest["params"]["mode"] == "recover" and manifest["params"]["schema_version"] == "1.2"
+    assert manifest["summary"] == summary
+    assert any("data:extracted/data.dat" in role for role in manifest["inputs"])
+    for entry in manifest["inputs"].values():
+        assert entry["sha256"] == hashlib.sha256(Path(entry["path"]).read_bytes()).hexdigest()
+    assert before == {p: p.read_bytes() for p in before}
+    with pytest.raises(FileExistsError):
+        run_recovery(**kwargs, output_dir=tmp_path / "recovery")
+    with pytest.raises(ValueError, match="inside"):
+        run_recovery(**kwargs, output_dir=run / "nested")
+
+
+def test_recovery_accepts_relocated_parse_and_inventory(native_fixture, tmp_path):
+    run, _, _, _ = native_fixture(r"\addplot coordinates {(1,2)};")
+    moved = tmp_path / "relocated"
+    run.rename(moved)
+    moved_inventory = tmp_path / "relocated_inventory"
+    (tmp_path / "inventory").rename(moved_inventory)
+    summary = run_recovery(classified_dir=tmp_path / "classified", parsed_dir=moved, inventory_dir=moved_inventory,
+                           output_dir=tmp_path / "recovery")
+    assert summary["recovered_series"] == 1
+
+
+@pytest.mark.parametrize("fault", ["source", "flat", "classified_ids", "upstream", "parse_identity", "classified_schema"])
+def test_recovery_rejects_untrustworthy_associations(native_fixture, tmp_path, fault):
+    run, root, _, _ = native_fixture(r"\addplot coordinates {(1,2)};")
+    if fault == "source":
+        (root / "main.tex").write_text("changed")
+    elif fault == "flat":
+        (run / "papers" / PAPER_ID / "flat.tex").write_text("changed")
+    elif fault == "classified_ids":
+        path = tmp_path / "classified" / "figures.jsonl"
+        records = read_jsonl(path)
+        records[0]["figure_id"] = "wrong_figure"
+        path.write_text(json.dumps(records[0]) + "\n")
+    elif fault == "upstream":
+        (tmp_path / "inventory" / "figures.jsonl").write_text("")
+    elif fault == "parse_identity":
+        (run / "papers.jsonl").write_text("{}\n")
+    else:
+        path = tmp_path / "classified" / "manifest.json"
+        manifest = read_json(path)
+        manifest["params"]["schema_version"] = "1.0"
+        write_json(path, manifest)
+    kwargs = dict(classified_dir=tmp_path / "classified", parsed_dir=run, output_dir=tmp_path / "recovery")
+    if fault in {"source", "flat"}:
+        summary = run_recovery(**kwargs)
+        assert summary["recovered_series"] == 0 and summary["paper_results"][0]["status"] == "failed"
+        records = read_jsonl(tmp_path / "recovery" / "plot_data.jsonl")
+        assert all(r["source_method"] == "unavailable" and r["series"] == [] for r in records)
+    else:
+        with pytest.raises(ValueError):
+            run_recovery(**kwargs)
+        assert not (tmp_path / "recovery").exists()
+
+
+def test_recovery_failure_isolation_between_papers(inventory_run, tmp_path):
+    import shutil
+    second_id = "2222_00002v1"
+    run, root = inventory_run(r"\begin{figure}\begin{axis}\addplot coordinates {(1,2)};\end{axis}\caption{Histogram}\end{figure}")
+    shutil.copytree(run / "papers" / PAPER_ID, run / "papers" / second_id)
+    papers = read_jsonl(run / "papers.jsonl")
+    papers.append({"paper_id": second_id, "arxiv_id": "2222.00002v1", "status": "success"})
+    (run / "papers.jsonl").write_text("".join(json.dumps(p) + "\n" for p in papers))
+    inventory(run, tmp_path)
+    run_classification(inventory_dir=tmp_path / "inventory", output_dir=tmp_path / "classified")
+    (root / "main.tex").write_text("modified source")
+    summary = run_recovery(classified_dir=tmp_path / "classified", parsed_dir=run, output_dir=tmp_path / "recovery")
+    records = read_jsonl(tmp_path / "recovery" / "plot_data.jsonl")
+    assert summary["recovered_series"] == 1
+    assert {r["paper_id"]: r["source_method"] for r in records} == {PAPER_ID: "unavailable", second_id: "original_source_data"}
+
+
+def test_recovery_mixed_and_generic_override(inventory_run, tmp_path):
+    body = r"""\begin{figure}
+\subfloat[Histogram]{\begin{axis}\addplot coordinates {(1,2)};\end{axis}}
+\subfloat[Detector schematic]{\begin{axis}\addplot coordinates {(9,99)};\end{axis}}
+\caption{Combined}\end{figure}"""
+    run, _ = inventory_run(body)
+    inventory(run, tmp_path)
+    run_classification(inventory_dir=tmp_path / "inventory", output_dir=tmp_path / "classified")
+    args = dict(classified_dir=tmp_path / "classified", parsed_dir=run)
+    summary = run_recovery(**args, output_dir=tmp_path / "recovery")
+    records = read_jsonl(tmp_path / "recovery" / "plot_data.jsonl")
+    assert summary["recovered_series"] == 1
+    assert records[0]["classification"] == {"figure_type": "mixed", "panel_type": "plot", "plot_type": "histogram"}
+    assert records[0]["panel_id"] is not None and records[0]["series"][0]["y"] == [2]
+    override = run_recovery(**args, output_dir=tmp_path / "override", include_generic=True)
+    assert override["recovered_series"] == 2
+
+
+@pytest.mark.parametrize("mode", ["hepdata", "auto", "compare"])
+def test_recovery_hepdata_modes_and_compare(native_fixture, tmp_path, mode):
+    run, _, figures, _ = native_fixture(r"\addplot coordinates {(1,2) (2,4)};\addlegendentry{Signal}",
+        axis_options=r"[xlabel={Energy},ylabel={Signal},x unit={GeV},y unit={pb}]")
+    data_dir = tmp_path / "hepdata"
+    data_dir.mkdir()
+    write_json(data_dir / "table.json", {
+        "independent_variables": [{"header": {"name": "Energy", "units": "GeV"}, "values": [{"value": 1}, {"value": 2}]}],
+        "dependent_variables": [{"header": {"name": "Signal", "units": "pb"}, "values": [{"value": 2.5}, {"value": 4}]}]})
+    write_json(data_dir / "mapping.json", {"schema_version": "1", "mappings": [
+        {"paper_id": PAPER_ID, "figure_id": figures[0].figure_id, "record_id": "123", "table_name": "Table 7", "source_file": "table.json"}]})
+    summary = run_recovery(classified_dir=tmp_path / "classified", parsed_dir=run, output_dir=tmp_path / "recovery",
+                           source_method=mode, hepdata_dir=data_dir)
+    assert summary["source_method_counts"]["original_published_data"] == 1
+    assert summary["recovered_series"] == (1 if mode == "hepdata" else 2)
+    if mode == "compare":
+        assert summary["comparisons"][0]["status"] == "compared"
+        assert summary["comparisons"][0]["y_differences"] == ["-0.5", "0"]
+        assert summary["comparisons"][0]["scientific_agreement"] == "manual_review_pending"
+    else:
+        assert summary["comparisons"] == []
+
+
+def test_recovery_cli_and_offline_default(native_fixture, tmp_path, monkeypatch):
+    import requests
+    run, _, _, _ = native_fixture(r"\addplot coordinates {(1,2)};")
+    def forbidden(*args, **kwargs):
+        raise AssertionError("No network allowed")
+    monkeypatch.setattr(requests, "get", forbidden)
+    summary = run_recovery(classified_dir=tmp_path / "classified", parsed_dir=run, output_dir=tmp_path / "offline",
+                           source_method="auto")
+    assert summary["recovered_series"] == 1
+    command = [sys.executable, "scripts/extract_plots.py", "--mode", "recover", "--classified-dir", str(tmp_path / "classified"),
+               "--parsed-dir", str(run), "--output-dir", str(tmp_path / "cli_recovery")]
+    result = subprocess.run(command, cwd=Path(__file__).resolve().parents[1], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert read_manifest(tmp_path / "cli_recovery", "extract_plots")["summary"]["recovered_series"] == 1
+
+
+@pytest.mark.parametrize("env,xscale,yscale", [("loglogaxis", "log", "log"), ("semilogxaxis", "log", None),
+                                               ("semilogyaxis", None, "log")])
+def test_native_log_axis_environments(inventory_run, tmp_path, env, xscale, yscale):
+    run, root = inventory_run(r"\begin{figure}\begin{" + env + r"}\addplot coordinates {(1,2)};\end{" + env
+                              + r"}\caption{Histogram}\end{figure}")
+    inventory(run, tmp_path)
+    run_classification(inventory_dir=tmp_path / "inventory", output_dir=tmp_path / "classified")
+    run_recovery(classified_dir=tmp_path / "classified", parsed_dir=run, output_dir=tmp_path / "recovery")
+    data = read_jsonl(tmp_path / "recovery" / "plot_data.jsonl")[0]
+    assert data["axes"]["x"]["scale"] == xscale and data["axes"]["y"]["scale"] == yscale
+
+
+def test_native_asymmetric_uncertainty_and_included_source(inventory_run, tmp_path):
+    run, root = inventory_run(r"\begin{figure}\input{plots/native}\caption{Histogram}\end{figure}", sources={
+        "plots/native.tex": r"\begin{axis}\addplot[error bars/.cd,y dir=both,y explicit]"
+                            r"table[x=x,y=y,y error plus=up,y error minus=down]{data.dat};\end{axis}"})
+    (root / "plots" / "data.dat").write_text("x y up down\n1 2 0.3 0.2\n")
+    inventory(run, tmp_path)
+    run_classification(inventory_dir=tmp_path / "inventory", output_dir=tmp_path / "classified")
+    run_recovery(classified_dir=tmp_path / "classified", parsed_dir=run, output_dir=tmp_path / "recovery")
+    data = read_jsonl(tmp_path / "recovery" / "plot_data.jsonl")[0]
+    error = data["series"][0]["uncertainties"][0]
+    assert error["representation"] == "asymmetric" and error["plus"] == [0.3] and error["minus"] == [0.2]
+    assert data["association"]["source_origins"][0]["path"] == "extracted/plots/native.tex"
+
+
+def test_native_plot_outside_all_figures_is_candidate(inventory_run, tmp_path):
+    run, _ = inventory_run(r"\begin{axis}\addplot coordinates {(1,2)};\end{axis}")
+    inventory(run, tmp_path)
+    run_classification(inventory_dir=tmp_path / "inventory", output_dir=tmp_path / "classified")
+    summary = run_recovery(classified_dir=tmp_path / "classified", parsed_dir=run, output_dir=tmp_path / "recovery")
+    assert summary["recovered_series"] == 0 and summary["association_counts"] == {"candidate": 1}
+    record = read_jsonl(tmp_path / "recovery" / "plot_data.jsonl")[0]
+    assert record["figure_id"] is None and record["source_method"] == "candidate_data" and record["series"] == []
+
+
+def test_native_generic_figure_skipped_unless_overridden(native_fixture, tmp_path):
+    run, _, _, _ = native_fixture(r"\addplot coordinates {(1,2)};", caption="Detector schematic")
+    args = dict(classified_dir=tmp_path / "classified", parsed_dir=run)
+    assert run_recovery(**args, output_dir=tmp_path / "skip")["records"] == 0
+    assert run_recovery(**args, output_dir=tmp_path / "override", include_generic=True)["recovered_series"] == 1
+
+
+def test_native_ambiguous_external_origin_is_not_guessed(inventory_run, tmp_path):
+    command = r"\addplot table[x=x,y=y]{data.dat};"
+    run, root = inventory_run(r"\begin{figure}\begin{axis}" + command + r"\end{axis}\caption{Histogram}\end{figure}",
+                              sources={"unrelated/standalone.tex": r"\begin{axis}" + command + r"\end{axis}"})
+    (root / "data.dat").write_text("x y\n1 2\n")
+    inventory(run, tmp_path)
+    run_classification(inventory_dir=tmp_path / "inventory", output_dir=tmp_path / "classified")
+    summary = run_recovery(classified_dir=tmp_path / "classified", parsed_dir=run, output_dir=tmp_path / "recovery")
+    assert summary["recovered_series"] == 0
+    record = read_jsonl(tmp_path / "recovery" / "plot_data.jsonl")[0]
+    assert record["association"]["state"] == "ambiguous" and record["source_method"] == "candidate_data"
+
+
+def test_hepdata_bad_metadata_and_source_escape(native_fixture, tmp_path, hepdata_table):
+    from kamiknows.kamiplotextractor.source_data import recover_hepdata
+    run, _, figures, panels = native_fixture(r"\addplot coordinates {(1,2)};")
+    directory = tmp_path / "hepdata"
+    directory.mkdir()
+    hepdata_table["arxiv_id"] = "9999.99999"
+    write_json(directory / "table.json", hepdata_table)
+    entry = {"paper_id": PAPER_ID, "figure_id": figures[0].figure_id, "record_id": "123", "table_name": "Table 7", "source_file": "table.json"}
+    args = dict(figures=figures, panels=panels, papers=read_jsonl(run / "papers.jsonl"), root=directory)
+    records, _ = recover_hepdata(**args, mappings=[entry])
+    assert records[0].association["state"] == "unmatched" and records[0].series == []
+    entry["source_file"] = "../secret.json"
+    records, _ = recover_hepdata(**args, mappings=[entry])
+    assert records[0].warnings[0]["code"] == "unsafe_path"
+
+
+def test_hepdata_missing_values_empty_sides_and_infinite_bins(hepdata_table):
+    from kamiknows.kamiplotextractor.source_data import parse_hepdata_table
+    hepdata_table["independent_variables"][0]["values"][0]["low"] = "-.inf"
+    hepdata_table["dependent_variables"][0]["values"][0]["errors"] = [{"asymerror": {"plus": "", "minus": -0.3}}]
+    hepdata_table["dependent_variables"][0]["values"][1]["value"] = "not measured"
+    _, series, warnings = parse_hepdata_table(hepdata_table)
+    assert series[0]["bins"][0]["raw"]["low"] == "-.inf"
+    assert series[0]["uncertainties"][0]["components"][0]["asymerror"]["plus"]["state"] == "missing"
+    assert series[0]["value_states"][1]["state"] == "nonnumeric" and warnings
+
+
+def test_hepdata_rejects_different_column_lengths(hepdata_table):
+    from kamiknows.kamiplotextractor.source_data import DataError, parse_hepdata_table
+    hepdata_table["independent_variables"][0]["values"].pop()
+    with pytest.raises(DataError, match="different row counts"):
+        parse_hepdata_table(hepdata_table)
+
+
+def test_hepdata_mapping_ids_do_not_depend_on_entry_order(native_fixture, tmp_path, hepdata_table):
+    from kamiknows.kamiplotextractor.source_data import recover_hepdata
+    run, _, figures, panels = native_fixture(r"\addplot coordinates {(1,2)};")
+    write_json(tmp_path / "table.json", hepdata_table)
+    entries = [{"paper_id": PAPER_ID, "figure_id": figures[0].figure_id, "record_id": "123", "table_name": table, "source_file": "table.json"}
+               for table in ("A", "B")]
+    args = dict(figures=figures, panels=panels, papers=read_jsonl(run / "papers.jsonl"), root=tmp_path)
+    forward, _ = recover_hepdata(**args, mappings=entries)
+    reverse, _ = recover_hepdata(**args, mappings=list(reversed(entries)))
+    assert [r.data_id for r in forward] == list(reversed([r.data_id for r in reverse]))
+
+
+def test_compare_requires_exact_axes_units_and_decimal_coordinates(native_fixture, tmp_path):
+    from kamiknows.kamiplotextractor.source_data import compare_sources, data_record, parse_hepdata_table
+    run, root, figures, panels = native_fixture(r"\addplot coordinates {(1.00000000000000000001,2)};\addlegendentry{Signal}",
+        axis_options=r"[xlabel={Energy},ylabel={Signal},x unit={GeV},y unit={pb}]")
+    native, _ = native_extract(run, root, figures, panels)
+    table = {"independent_variables": [{"header": {"name": "Energy", "units": "GeV"}, "values": [{"value": 1}]}],
+             "dependent_variables": [{"header": {"name": "Signal", "units": "pb"}, "values": [{"value": 2}]}]}
+    published = data_record(PAPER_ID, figures[0], None, "hepdata", "test", {"state": "verified"})
+    published.source_method = "original_published_data"
+    published.axes, published.series, _ = parse_hepdata_table(table)
+    published.series[0]["series_id"] = "published-series"
+    result = compare_sources([*native, published])[0]
+    assert result["status"] == "not_comparable" and result["reason"] == "different_coordinates_or_missing_values"
+    published.axes["independent_variables"][0]["units"] = "MeV"
+    assert compare_sources([*native, published])[0]["reason"] == "no_unique_explicit_series_and_axes_match"
+
+
+def test_hepdata_mocked_online_import_preserves_download(native_fixture, tmp_path, hepdata_table, monkeypatch):
+    from kamiknows.kamiplotextractor import source_data
+    run, _, figures, panels = native_fixture(r"\addplot coordinates {(1,2)};")
+    content = json.dumps(hepdata_table).encode()
+    monkeypatch.setattr(source_data, "fetch_hepdata", lambda *args: (content, "https://www.hepdata.net/download/table/mock/yaml"))
+    records, inputs = source_data.recover_hepdata(figures=figures, panels=panels, papers=read_jsonl(run / "papers.jsonl"), root=tmp_path,
+        enable_network=True, mappings=[{"paper_id": PAPER_ID, "figure_id": figures[0].figure_id, "record_id": "123", "table_name": "Table 7"}])
+    assert records[0].source_method == "original_published_data" and inputs == {}
+    assert records[0].raw_source["download_text"] == content.decode()
+    assert records[0].provenance["sources"][0]["sha256"] == hashlib.sha256(content).hexdigest()
+
+
+def test_recovery_hashes_invalid_data_before_decode(native_fixture, tmp_path):
+    run, root, figures, panels = native_fixture(r"\addplot table{data.dat};")
+    (root / "data.dat").write_bytes(b"\xff\xfe")
+    records, inputs = native_extract(run, root, figures, panels)
+    assert records[0].series == [] and records[0].extraction_status == "unavailable"
+    assert records[0].provenance["sources"][-1]["sha256"] == hashlib.sha256(b"\xff\xfe").hexdigest()
+    assert "data:extracted/data.dat" in inputs
