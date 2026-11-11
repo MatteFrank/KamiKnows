@@ -8,6 +8,7 @@ from typing import Any
 SCHEMA_VERSION = "1.0"
 CLASSIFIED_SCHEMA_VERSION = "1.1"
 NUMERICAL_SCHEMA_VERSION = "1.2"
+DIGITIZED_SCHEMA_VERSION = "1.3"
 
 
 @dataclass
@@ -90,6 +91,12 @@ class PlotDataRecord:
     validation_status: str = "not_validated"
     review_status: str = "pending"
     schema_version: str = NUMERICAL_SCHEMA_VERSION
+    calibration: dict[str, Any] = field(default_factory=dict)
+    quality: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        record = asdict(self)
+        if self.schema_version == NUMERICAL_SCHEMA_VERSION:
+            record.pop("calibration")
+            record.pop("quality")
+        return record

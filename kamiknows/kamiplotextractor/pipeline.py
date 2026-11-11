@@ -13,7 +13,8 @@ from kamiknows.common import (create_output_dir, read_json, read_jsonl, read_man
 from .assets import local_path
 from .inventory import CLASSIFICATION_METHOD, FigureClassifier, FigureExtractor
 from .latex import issue
-from .records import CLASSIFIED_SCHEMA_VERSION, NUMERICAL_SCHEMA_VERSION, SCHEMA_VERSION, FigureRecord, PanelRecord
+from .records import (CLASSIFIED_SCHEMA_VERSION, DIGITIZED_SCHEMA_VERSION, NUMERICAL_SCHEMA_VERSION,
+                      SCHEMA_VERSION, FigureRecord, PanelRecord, PlotDataRecord)
 
 
 def run_inventory(*, parsed_dir: Path, output_dir: Path, mode: str = "inventory") -> dict[str, Any]:
@@ -96,6 +97,326 @@ def run_inventory(*, parsed_dir: Path, output_dir: Path, mode: str = "inventory"
                    params={"mode": mode, "schema_version": SCHEMA_VERSION, "parsed_dir": parsed_dir},
                    inputs=inputs, summary=summary)
     return summary
+
+
+def _numerical_run(directory: Path, mode: str, schema: str, filename: str, inputs: dict) -> tuple[dict,list]:
+    """Read numerical runs by role; record both manifest and payload hashes."""
+    manifest_path=local_path(directory,directory/"manifest.json")
+    manifest=read_manifest(directory,"extract_plots")
+    if manifest.get("params",{}).get("mode")!=mode or manifest["params"].get("schema_version")!=schema:
+        raise ValueError(f"expected {mode} run with schema {schema}")
+    path=local_path(directory,directory/filename)
+    records=read_jsonl(path)
+    if any(r.get("schema_version")!=schema for r in records):
+        raise ValueError("numerical record schema mismatch")
+    if len(records)!=manifest["summary"].get("records"):
+        raise ValueError("numerical record count differs from manifest")
+    digest=manifest["summary"].get("data_sha256")
+    if digest and sha256_file(path)!=digest:
+        raise ValueError("numerical payload hash mismatch")
+    inputs[mode+"_manifest"],inputs[mode+"_data"]=manifest_path,path
+    return manifest,records
+
+
+def run_digitization(*, classified_dir: Path, parsed_dir: Path, output_dir: Path,
+                     backend: str = "auto", calibration_file: Path | None = None,
+                     imports_dir: Path | None = None, recovery_dir: Path | None = None,
+                     inventory_dir: Path | None = None, selection: str = "unresolved",
+                     raster_dpi: int = 144, include_generic: bool = False) -> dict:
+    """Reconstruct selected visual geometry in a new, provenance-linked schema 1.3 run."""
+    import hashlib
+    import json
+    import time
+    from .digitization import BACKENDS, Backend, Calibration, ExtractionError, load_config, raster_image
+    from .validation import compare_series, overlay, structural_check
+
+    if backend not in {*BACKENDS,"auto","compare"} or selection not in {"all","unresolved"}:
+        raise ValueError("invalid backend/selection")
+    if type(raster_dpi) is not int or not 72<=raster_dpi<=300:
+        raise ValueError("raster_dpi must be an integer between 72 and 300")
+    classified_dir,parsed_dir,output_dir=Path(classified_dir).resolve(),Path(parsed_dir).resolve(),Path(output_dir)
+    figures,panels,papers,inputs,original,upstream=_recovery_inputs(classified_dir,parsed_dir,inventory_dir)
+    calibrations=load_config(Path(calibration_file),"plots") if calibration_file else []
+    exports=[]
+    if imports_dir:
+        imports_dir=Path(imports_dir).resolve()
+        mapping=local_path(imports_dir,imports_dir/"imports.json")
+        exports=load_config(mapping,"exports");inputs["imports_mapping"]=mapping
+    if calibration_file:inputs["calibration_file"]=Path(calibration_file)
+    identities={(f.figure_id,a["asset_id"],a.get("panel_id")): (f,a) for f in figures for a in f.source_assets}
+    configured={}
+    for c in calibrations:
+        key=(c.get("figure_id"),c.get("asset_id"),c.get("panel_id"))
+        if key not in identities or key in configured:
+            raise ValueError("unknown or duplicate figure/panel/asset calibration mapping")
+        configured[key]=c
+    export_ids=set()
+    for e in exports:
+        key=(e.get("figure_id"),e.get("asset_id"),e.get("panel_id"))
+        if key not in identities or e.get("paper_id")!=identities[key][0].paper_id:
+            raise ValueError("incorrect figure/paper/panel/asset export mapping")
+        if e.get("backend") not in {"chartdetective","plotsift"}:
+            raise ValueError("import backend must be chartdetective or plotsift")
+        identity=(*key,e["backend"],e.get("series_id"))
+        if identity in export_ids:
+            raise ValueError("ambiguous duplicate export series mapping")
+        export_ids.add(identity)
+        if not isinstance(e.get("calibration"),dict):
+            raise ValueError("external export requires calibration metadata")
+    originals=[]
+    if recovery_dir:
+        recovery_dir=Path(recovery_dir).resolve()
+        previous,originals=_numerical_run(recovery_dir,"recover",NUMERICAL_SCHEMA_VERSION,"plot_data.jsonl",inputs)
+        if previous["inputs"].get("classified_manifest",{}).get("sha256")!=sha256_file(inputs["classified_manifest"]):
+            raise ValueError("recovery and digitization classified lineage differs")
+    for root in (classified_dir,parsed_dir,upstream,imports_dir,recovery_dir):
+        if root and output_dir.resolve().is_relative_to(root):
+            raise ValueError("output directory must not be inside an input run/source directory")
+    if calibration_file and output_dir.resolve().is_relative_to(Path(calibration_file).resolve()):
+        raise ValueError("output directory overlaps calibration input")
+    output_dir=create_output_dir(output_dir)
+    records=[];diagnostics=[];source_roots={};source_errors={}
+    for paper in papers:
+        try:
+            _,root=_verify_paper_sources(parsed_dir,paper["paper_id"],original["inputs"],inputs)
+            source_roots[paper["paper_id"]]=root
+        except (OSError,ValueError) as exc:
+            source_errors[paper["paper_id"]]=str(exc)
+    capabilities={name:Backend(name).capabilities() for name in BACKENDS}
+    for figure in figures:
+        # An unresolved includegraphics still has an identity and gets a diagnostic record.
+        for asset in figure.source_assets:
+            key=(figure.figure_id,asset["asset_id"],asset.get("panel_id"))
+            c=configured.get(key)
+            mapped=[e for e in exports if (e["figure_id"],e["asset_id"],e.get("panel_id"))==key]
+            fmt=asset.get("format","").lower()
+            eligible="pymupdf" if fmt=="pdf" else "plotdigitizer" if fmt in {"png","jpg","jpeg","webp"} else None
+            # Auto never guesses that a raster contains one trajectory or that paths are distinguishable.
+            if backend=="auto":
+                if c and eligible=="pymupdf" and c.get("series") and capabilities[eligible]["available"]:chosen=[eligible]
+                elif c and eligible=="plotdigitizer" and c.get("single_curve_evidence") and capabilities[eligible]["available"]:chosen=[eligible]
+                elif mapped:chosen=[sorted({e["backend"] for e in mapped})[0]]
+                else:chosen=[eligible or "auto"]
+            else:chosen=list(BACKENDS) if backend=="compare" else [backend]
+            panel=next((p for p in panels if p.panel_id==asset.get("panel_id")),None)
+            generic=(panel.panel_type=="generic" if panel else figure.figure_type=="generic")
+            verified=[r for r in originals if r.get("figure_id")==figure.figure_id and r.get("panel_id")==asset.get("panel_id")
+                      and r.get("association",{}).get("state")=="verified"
+                      and r.get("source_method") in {"original_source_data","original_published_data"}
+                      and r.get("validation_status")=="structural_checks_passed" and r.get("extraction_status")=="success"
+                      and r.get("series") and all(s.get("x") and len(s["x"])==len(s.get("y",[]))
+                                                  and all(v is not None for v in [*s["x"],*s["y"]]) for s in r["series"])
+                      and (r.get("provenance",{}).get("asset_sha256")==asset.get("sha256")
+                           or r["data_id"] in (c or {}).get("original_data_ids",[]))]
+            for name in chosen:
+                started=time.perf_counter()
+                entry_ids=sorted([e for e in mapped if e["backend"]==name],key=lambda e:e["series_id"])
+                identity=json.dumps([figure.paper_id,*key,asset.get("sha256"),name,c,entry_ids],sort_keys=True)
+                data_id="digitized_"+hashlib.sha256(identity.encode()).hexdigest()[:24]
+                record=PlotDataRecord(figure.paper_id,figure.figure_id,asset.get("panel_id"),data_id,"unavailable",
+                    {"state":"verified","kind":"inventory_asset","asset_id":asset["asset_id"]},
+                    {"figure_type":figure.figure_type,"panel_type":panel.panel_type if panel else None,
+                     "method":figure.classification_method,"evidence":figure.classification_evidence},
+                    {"asset_id":asset["asset_id"],"asset_sha256":asset.get("sha256"),"source_path":asset.get("path"),
+                     "latex_layout":asset.get("layout",{}),"classified_manifest_sha256":sha256_file(inputs["classified_manifest"]),
+                     "inventory_manifest_sha256":sha256_file(inputs["upstream_inventory_manifest"]),
+                     "manual_review":"pending"},backend=name,backend_version=str(capabilities.get(name,{}).get("version")),
+                    schema_version=DIGITIZED_SCHEMA_VERSION)
+                record.quality={"structural_validity":"not_checked","geometry_calibration":"not_checked",
+                                "scientific_agreement":"not_evaluated","manual_review":"pending","flags":[]}
+                work=output_dir/"overlays"/data_id
+                try:
+                    if figure.paper_id in source_errors:
+                        raise ExtractionError("source_mismatch",source_errors[figure.paper_id])
+                    if generic and not include_generic:raise ExtractionError("skipped_generic","generic classification excluded")
+                    if verified and selection=="unresolved":
+                        record.provenance["original_data_ids"]=[r["data_id"] for r in verified]
+                        raise ExtractionError("skipped_original","explicitly asset-associated original vectors available; scientific review still pending")
+                    if asset.get("status")!="resolved":raise ExtractionError("unsupported","unresolved source asset")
+                    path=local_path(source_roots[figure.paper_id],source_roots[figure.paper_id]/asset["path"])
+                    if sha256_file(path)!=asset.get("sha256"):raise ExtractionError("source_mismatch","asset SHA256 mismatch")
+                    entries=[e for e in mapped if e["backend"]==name]
+                    interactive=name in {"chartdetective","plotsift"}
+                    if interactive and not entries:raise ExtractionError("needs_manual_review","no explicitly mapped interactive export")
+                    if name=="chartdetective" and fmt!="pdf":raise ExtractionError("unsupported","ChartDetective import requires a vector PDF source asset")
+                    if not interactive and name!=eligible:raise ExtractionError("unsupported","backend does not support this asset format")
+                    selected=entries[0]["calibration"] if interactive else c
+                    if selected is None:raise ExtractionError("needs_calibration","explicit axis calibration is missing")
+                    try:cal=Calibration(selected)
+                    except (ValueError,KeyError,TypeError,OverflowError) as exc:
+                        raise ExtractionError("needs_calibration",str(exc)) from exc
+                    record.calibration=cal.metadata()
+                    record.axes={axis:{"scale":selected[axis]["scale"],"unit":selected[axis]["unit"]} for axis in ("x","y")}
+                    layout=asset.get("layout",{})
+                    if layout.get("page") and str(selected.get("page",1))!=str(layout["page"]).strip("{} "):
+                        raise ExtractionError("needs_manual_review","selected PDF page conflicts with includegraphics page")
+                    if any(layout.get(k) is not None for k in ("trim","viewport","angle","origin")):
+                        if selected.get("extraction_scope")!="source_roi":
+                            raise ExtractionError("needs_manual_review","LaTeX crop/rotation requires explicit extraction_scope=source_roi; full display not reconstructed")
+                        record.quality["flags"].append("source_roi_only_latex_transform_not_reconstructed")
+                    if fmt!="pdf" and selected.get("page",1)!=1:raise ValueError("raster assets have only page 1")
+                    work.mkdir(parents=True)
+                    if interactive:
+                        for entry in entries:
+                            if entry["calibration"]!=selected:raise ValueError("series imports disagree on calibration")
+                            if entry.get("asset_sha256")!=asset["sha256"]:raise ValueError("source asset SHA256 mismatch in import")
+                            if any(entry.get(k)!=selected.get(k,entry.get(k)) for k in ("figure_id","panel_id","asset_id")):
+                                raise ValueError("import calibration identity mismatch")
+                            export_path=local_path(imports_dir,imports_dir/entry["file"])
+                            if export_path.is_file():inputs[f"export:{data_id}:{entry['series_id']}"]=export_path
+                            data,export_path=Backend(name).import_results(imports_dir,entry,cal)
+                            record.series.append(data);inputs[f"export:{data_id}:{data['series_id']}"]=export_path
+                        record.backend_version=entries[0]["backend_version"]
+                        record.provenance["exports"]=entries
+                        record.source_method="manual_digitized"
+                        if fmt=="pdf":
+                            from .digitization import read_pdf
+                            if Backend("pymupdf").available():
+                                _,record.raw_source,preview=read_pdf(path,cal,raster_dpi)
+                                (work/"source.png").write_bytes(preview)
+                            else:record.quality["flags"].append("source_bounds_and_overlay_unverified_without_pymupdf")
+                        else:
+                            image=raster_image(path,cal);image.save(work/"source.png")
+                            record.raw_source={"width":image.width,"height":image.height,"render_scale":1}
+                    else:
+                        record.series,record.raw_source=Backend(name).digitize(path,cal,work,raster_dpi)
+                        record.source_method="vector_reconstructed" if name=="pymupdf" else "raster_digitized"
+                        if name=="plotdigitizer":raster_image(path,cal).save(work/"source.png")
+                    for s in record.series:structural_check(s)
+                    record.extraction_status="success";record.validation_status="structural_checks_passed"
+                    record.quality.update(structural_validity="passed",geometry_calibration="explicit_calibration_applied")
+                    try:
+                        record.provenance["overlay"]=overlay(record.to_dict(),work)
+                    except (OSError,ValueError,ImportError) as exc:
+                        record.provenance["overlay"]={"status":"failed","reason":str(exc)}
+                        record.quality["flags"].append("overlay_failed_manual_review_required")
+                except (OSError,ValueError,RuntimeError,KeyError,TypeError,OverflowError) as exc:
+                    record.extraction_status=exc.status if isinstance(exc,ExtractionError) else "backend_error"
+                    record.source_method="unavailable";record.series=[]
+                    record.warnings=[issue(record.extraction_status,str(exc))]
+                    if (work/"geometry.json").is_file():
+                        record.raw_source={"geometry_file":str((work/"geometry.json").relative_to(output_dir))}
+                record.quality["elapsed_seconds"]=time.perf_counter()-started
+                record.quality["attempt"]="completed" if record.extraction_status=="success" else (
+                    "skipped" if record.extraction_status.startswith("skipped") else "impossible")
+                diagnostics.extend({**w,"data_id":data_id,"figure_id":figure.figure_id,"asset_id":asset["asset_id"],
+                                    "backend":name,"schema_version":DIGITIZED_SCHEMA_VERSION} for w in record.warnings)
+                records.append(record.to_dict())
+    comparisons=[]
+    if backend=="compare":
+        for i,a in enumerate(records):
+            for b in records[i+1:]:
+                if (a["figure_id"],a["panel_id"],a["provenance"]["asset_id"])!=(b["figure_id"],b["panel_id"],b["provenance"]["asset_id"]):continue
+                item={"a":a["data_id"],"b":b["data_id"],"status":"not_comparable","reason":"one or both backends abstained"}
+                if a["extraction_status"]==b["extraction_status"]=="success":
+                    policy=a["calibration"].get("comparison")
+                    item["reason"]="explicit common-series metadata and comparison tolerances required"
+                    if policy:
+                        item["series"]=[compare_series(s,t,policy) for s in a["series"] for t in b["series"] if s["series_id"]==t["series_id"]]
+                        item["status"]="attempted"
+                comparisons.append(item)
+    write_jsonl(output_dir/"digitized_data.jsonl",records)
+    summary={"mode":"digitize","schema_version":DIGITIZED_SCHEMA_VERSION,"backend":backend,"selection":selection,
+             "figures":len(figures),"panels":len(panels),"records":len(records),"capabilities":capabilities,
+             "extraction_status_counts":dict(Counter(r["extraction_status"] for r in records)),
+             "comparisons":comparisons,"manual_review":"pending","data_sha256":sha256_file(output_dir/"digitized_data.jsonl")}
+    write_json(output_dir/"digitization_summary.json",summary);write_jsonl(output_dir/"diagnostics.jsonl",diagnostics)
+    write_manifest(output_dir,step="extract_plots",inputs=inputs,summary=summary,
+                   params={"mode":"digitize","schema_version":DIGITIZED_SCHEMA_VERSION,"backend":backend,
+                           "selection":selection,"raster_dpi":raster_dpi,"include_generic":include_generic,
+                           "classified_dir":classified_dir,"parsed_dir":parsed_dir,"inventory_dir":upstream,
+                           "recovery_dir":recovery_dir,"calibration_file":calibration_file,"imports_dir":imports_dir,
+                           "limits":{"source_bytes":32*1024*1024,"pixels":16_000_000,"pdf_pages":100,"subprocess_seconds":45}})
+    return summary
+
+
+def run_benchmark(*, digitized_dir: Path, output_dir: Path, ground_truth_file: Path | None = None,
+                  recovery_dir: Path | None = None) -> dict:
+    """Evaluate only explicit independent references, leaving scientific interpretation to review."""
+    from .digitization import load_config
+    from .validation import compare_series, original_series
+
+    if (ground_truth_file is None)==(recovery_dir is None):
+        raise ValueError("benchmark requires exactly one of ground_truth_file and recovery_dir")
+    digitized_dir,output_dir=Path(digitized_dir).resolve(),Path(output_dir)
+    inputs={}
+    manifest,records=_numerical_run(digitized_dir,"digitize",DIGITIZED_SCHEMA_VERSION,"digitized_data.jsonl",inputs)
+    references=[]
+    if ground_truth_file:
+        ground_truth_file=Path(ground_truth_file)
+        references=load_config(ground_truth_file,"references");inputs["ground_truth"]=ground_truth_file
+        if ground_truth_file.resolve().is_relative_to(digitized_dir):
+            raise ValueError("ground truth must be independent of the digitized run")
+    else:
+        recovery_dir=Path(recovery_dir).resolve()
+        recovered,originals=_numerical_run(recovery_dir,"recover",NUMERICAL_SCHEMA_VERSION,"plot_data.jsonl",inputs)
+        if recovered["inputs"].get("classified_manifest",{}).get("sha256")!=manifest["inputs"].get("classified_manifest",{}).get("sha256"):
+            raise ValueError("benchmark recovery lineage differs")
+        for record in records:
+            for mapping in record["calibration"].get("benchmark_references",[]):
+                matches=[r for r in originals if r["data_id"]==mapping.get("data_id") and r.get("figure_id")==record["figure_id"]
+                         and r.get("association",{}).get("state")=="verified" and r.get("validation_status")=="structural_checks_passed"
+                         and r.get("extraction_status")=="success" and r.get("source_method") in {"original_source_data","original_published_data"}]
+                if len(matches)!=1:raise ValueError("benchmark original reference is not uniquely verified")
+                source=matches[0]
+                matches_s=[s for s in source["series"] if s.get("series_id")==mapping.get("source_series_id")]
+                if len(matches_s)!=1:raise ValueError("benchmark source series mapping is ambiguous")
+                extracted=next((s for s in record["series"] if s["series_id"]==mapping.get("series_id")),None)
+                if extracted is None:continue
+                # User explicitly attests the physical mapping; Task 03 does not invent these identities.
+                if mapping.get("observable")!=extracted.get("observable") or mapping.get("units")!=extracted.get("units"):
+                    raise ValueError("reference mapping must explicitly confirm observable and units")
+                references.append({"figure_id":record["figure_id"],"asset_id":record["provenance"]["asset_id"],
+                    "panel_id":record["panel_id"],"source_kind":source["source_method"],"independent":True,
+                    "provenance":{"recovery_data_id":source["data_id"]},"comparison":mapping["comparison"],
+                    "series":original_series(source,matches_s[0],mapping)})
+        # The same source mapping appears in each compared backend's calibration.
+        import json
+        references=list({json.dumps(r,sort_keys=True):r for r in references}.values())
+    if not references:raise ValueError("no explicit independent ground-truth references")
+    keys=set()
+    for ref in references:
+        if (ref.get("source_kind") not in {"synthetic","original_source_data","original_published_data"}
+                or ref.get("independent") is not True or not ref.get("provenance")):
+            raise ValueError("ground truth requires independent synthetic/original provenance")
+        if ref.get("data_id") in {r["data_id"] for r in records} or ref.get("source_method") in {"vector_reconstructed","raster_digitized","manual_digitized"}:
+            raise ValueError("digitized data cannot be its own independent ground truth")
+        key=(ref.get("figure_id"),ref.get("asset_id"),ref.get("panel_id"),ref["series"].get("series_id"))
+        if key in keys:raise ValueError("duplicate ambiguous ground-truth series")
+        keys.add(key)
+    for root in (digitized_dir,recovery_dir):
+        if root and output_dir.resolve().is_relative_to(root):raise ValueError("benchmark output must be outside input runs")
+    details=[]
+    for record in records:
+        for ref in references:
+            if (ref.get("figure_id"),ref.get("asset_id"),ref.get("panel_id"))!=(record["figure_id"],record["provenance"]["asset_id"],record["panel_id"]):continue
+            detail={"data_id":record["data_id"],"backend":record["backend"],"reference_provenance":ref["provenance"],
+                    "series_id":ref["series"]["series_id"],"status":"abstained","extraction_status":record["extraction_status"],
+                    "calibration_residuals":record["calibration"].get("fit"),"manual_interventions":record["calibration"].get("manual_interventions",[]),
+                    "elapsed_seconds":record["quality"]["elapsed_seconds"],"structural_validity":record["quality"]["structural_validity"],
+                    "geometry_calibration":record["quality"]["geometry_calibration"],"manual_review":"pending"}
+            found=[s for s in record["series"] if s["series_id"]==ref["series"]["series_id"]]
+            if found:
+                if record["calibration"].get("calibration_source")!="axis_ticks":
+                    detail.update(status="not_comparable",reason="independent axis-tick calibration not documented; possible evaluation leakage")
+                else:detail.update(compare_series(found[0],ref["series"],ref.get("comparison",{})))
+            details.append(detail)
+    if not details:raise ValueError("ground truth does not match any digitized asset")
+    compared=[d for d in details if d["status"]=="compared"]
+    by_backend={name:{"cases":sum(d["backend"]==name for d in details),
+                      "compared":sum(d["backend"]==name for d in compared),
+                      "elapsed_seconds":sum(r["quality"]["elapsed_seconds"] for r in records if r["backend"]==name)}
+                for name in sorted({d["backend"] for d in details})}
+    result={"mode":"benchmark","schema_version":DIGITIZED_SCHEMA_VERSION,"records":len(details),"cases":len(details),
+            "compared":len(compared),"coverage":len(compared)/len(details),"abstention_rate":1-len(compared)/len(details),
+            "mean_correct_fraction":sum(d["correct_fraction"] for d in compared)/len(compared) if compared else None,
+            "by_backend":by_backend,"scope":"configured independent reference cases only; not a real-HEP accuracy claim",
+            "manual_review":"pending","scientific_agreement":"numerical_metrics_only"}
+    output_dir=create_output_dir(output_dir)
+    write_json(output_dir/"benchmark_results.json",result);write_jsonl(output_dir/"benchmark_details.jsonl",details)
+    write_manifest(output_dir,step="extract_plots",params={"mode":"benchmark","schema_version":DIGITIZED_SCHEMA_VERSION,
+                   "digitized_dir":digitized_dir,"ground_truth_file":ground_truth_file,"recovery_dir":recovery_dir},inputs=inputs,summary=result)
+    return result
 
 
 # Classification reads the saved inventory only. Validation happens before creating
