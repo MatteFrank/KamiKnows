@@ -11,6 +11,31 @@ NUMERICAL_SCHEMA_VERSION = "1.2"
 DIGITIZED_SCHEMA_VERSION = "1.3"
 
 
+def series_axis_metadata(record: dict, series: dict) -> dict[str, dict]:
+    """Keep physical units separate from scale and already-applied display multipliers."""
+    axes = ("x", "y", "z") if series.get("geometry") == "histogram_2d_cells" else ("x", "y")
+    result = {}
+    unknown = {None, "", "unknown", "unspecified"}
+    for axis in axes:
+        config = series.get("axis_calibration", {}).get(axis) or record.get("calibration", {}).get(axis, {})
+        series_unit = series.get("units", {}).get(axis)
+        config_unit = config.get("unit")
+        if series_unit not in unknown and config_unit not in unknown and series_unit != config_unit:
+            raise ValueError(f"conflicting {axis.upper()} units in series and calibration")
+        unit = series_unit if series_unit not in unknown else config_unit
+        status = config.get("unit_status") or ("recorded" if unit not in unknown else "unspecified")
+        if unit in unknown:
+            unit = "dimensionless" if config_unit == "" and status == "explicit" else "unspecified"
+        result[axis] = {
+            "unit": unit,
+            "unit_status": status,
+            "scale": config.get("scale", "unknown"),
+            "display_multiplier": config.get("display_multiplier", 1.0),
+            "values_include_display_multiplier": True,
+        }
+    return result
+
+
 @dataclass
 class FigureRecord:
     paper_id: str
@@ -33,11 +58,12 @@ class FigureRecord:
     schema_version: str = SCHEMA_VERSION
     classification_evidence: dict[str, Any] = field(default_factory=dict)
     classification_review_status: str = "pending"
+    analysis_type: str = "unknown"
 
     def to_dict(self) -> dict[str, Any]:
         record = asdict(self)
         if self.schema_version == SCHEMA_VERSION:
-            for key in ("classification_evidence", "classification_review_status"):
+            for key in ("classification_evidence", "classification_review_status", "analysis_type"):
                 record.pop(key)
         return record
 
@@ -61,12 +87,18 @@ class PanelRecord:
     classification_method: str = "not_classified"
     classification_evidence: dict[str, Any] = field(default_factory=dict)
     classification_review_status: str = "pending"
+    analysis_type: str = "unknown"
 
     def to_dict(self) -> dict[str, Any]:
         record = asdict(self)
         if self.schema_version == SCHEMA_VERSION:
-            for key in ("classification_confidence", "classification_method",
-                        "classification_evidence", "classification_review_status"):
+            for key in (
+                "classification_confidence",
+                "classification_method",
+                "classification_evidence",
+                "classification_review_status",
+                "analysis_type",
+            ):
                 record.pop(key)
         return record
 

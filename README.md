@@ -7,13 +7,20 @@ question, and asks a local LLM (through Ollama) to answer **only from those
 chunks, citing them**. Every run is saved with a manifest, so any answer can
 be traced back to the passages, the chunks and the papers it came from.
 
-The current corpus is five fast calorimeter simulation papers (FastCaloSim:
-GAN, WGAN and normalizing-flow shower generators) with a 20-question
-evaluation set.
+Optional **plot extraction** also reads the numbers out of the papers'
+figures (axis calibration, then digitization) and adds them to the chunks as
+text with units, scales and provenance, so questions about plotted values can
+be answered and cited by the same text-only models.
+
+The included examples use five fast-calorimeter simulation papers (GAN, WGAN
+and normalizing-flow generators), with one question set on paper text and one
+on plot values.
 
 **Slides:** [KamiKnows_pipeline.pdf](KamiKnows_pipeline.pdf) walks through the
-same content visually: repository layout, the five steps with their commands,
-SLURM, run naming and a quick start.
+repository, the commands, the output files and the review workflow.
+[KamiKnows_plot_extraction.pdf](docs/plot_extractor/KamiKnows_plot_extraction.pdf)
+explains plot extraction step by step, with the plot questions and how the
+models answer them.
 
 > Automatic checks validate formats and citation labels. They do not prove
 > that an answer is scientifically correct: that is what the manual review
@@ -36,7 +43,8 @@ SLURM, run naming and a quick start.
 13. [Questions files](#questions-files)
 14. [Tests](#tests)
 15. [Models and licenses](#models-and-licenses)
-16. [KamiPlotExtractor: figure inventory](#kamiplotextractor-figure-inventory)
+16. [Plot extraction](#plot-extraction)
+17. [Rebuild the slides](#rebuild-the-slides)
 
 ## Repository layout
 
@@ -49,17 +57,18 @@ kamiknows/            library, one module per step
   review.py           manual review sheet
   embeddings.py       sentence-transformers encoder (shared by chunking and retrieval)
   common.py           JSON I/O and run manifests (shared by all steps)
-  kamiplotextractor/   figure inventory, classification and source-data recovery
+  plot_extractor/     plot extraction: inventory, classification, calibration, digitization
 scripts/              one command per step (thin wrappers around kamiknows/)
   parse.py  chunk.py  retrieve.py  generate.py  review.py
   chat.py             interactive terminal chat
-  index_outputs.py    regenerates docs/outputs_index.md
-  extract_plots.py    inventory / classify / recover modes
+  extract_plots.py    plot extraction modes (inventory, classify, calibrate, digitize, ...)
+  index_outputs.py    writes outputs/INDEX.md, the local list of runs
   run_ollama.slurm    runs any command on a GPU node with its own Ollama server
 tests/                offline tests (no network, no Ollama, no models)
 data/input/           arXiv id lists (corpora)
 data/questions/       questions files: questions + expected answers, one file per evaluation set
-docs/outputs_index.md versioned list of all runs in outputs/
+docs/plot_extractor/  plot extraction guide, QA results and slides
+docs/slides/          source of both slide decks (build_slides.py, fonts, images)
 outputs/              run directories (not versioned)
 KamiKnows_pipeline.pdf  slides: visual version of this README
 ```
@@ -90,9 +99,20 @@ and `ollama serve`.
 ## The pipeline
 
 ```text
-arXiv ids ──parse──> sections + equations ──chunk──> chunks ──retrieve──> passages per question
-                                                                              │
-                         review.csv <──review── answers + citation check <──generate
+arXiv ids ──parse──> sections + equations ──────────────┐
+                  │                                     ├──chunk──> text + plot chunks
+                  └──> figure files                     │                  │
+                         │  (optional plot extraction)  │               retrieve
+                      inventory                         │                  │
+                         ↓                              │          passages per question
+                      classify                          │                  │
+                         ↓                              │               generate
+                      calibrate                         │                  │
+                         ↓                              │       answers + citation checks
+                      digitize ──> values + units ──────┘                  │
+                         └──> visual review                             review
+                                                                           ↓
+                                                                  review.csv + review.html
 ```
 
 Each step reads the directory written by the previous step and writes a new
@@ -103,10 +123,16 @@ from that point on.
 | Step | Command | Input | Main output |
 |---|---|---|---|
 | 1 | `scripts/parse.py` | arXiv id list | `papers.jsonl`, `papers/<id>/sections.json`, `equations.json` |
-| 2 | `scripts/chunk.py` | parse run | `chunks.jsonl`, `equations.jsonl` |
+| 2 | `scripts/chunk.py` | parse run + optional digitization runs | `chunks.jsonl`, `equations.jsonl` |
 | 3 | `scripts/retrieve.py` | chunk run + questions | `contexts.jsonl` (top-k passages per question) |
 | 4 | `scripts/generate.py` | retrieve run | `answers.jsonl` |
-| 5 | `scripts/review.py` | one or more generate runs | `review.csv` |
+| 5 | `scripts/review.py` | one or more generate runs | `review.csv`, `review.html` |
+
+Plot extraction is optional and runs between parsing and chunking, as
+subcommands of one CLI, `scripts/extract_plots.py`:
+`inventory → classify → calibrate → digitize`. Its output joins step 2 through
+`--digitized-dirs`; without that option the pipeline is text-only. See
+[Plot extraction](#plot-extraction).
 
 Every run directory also contains `manifest.json` (see
 [Run directories](#run-directories-and-naming)). Each script prints the run
@@ -131,6 +157,9 @@ URL); `#` starts a comment. Output per paper: `paper.json` (metadata, status
 `success|partial|failed`, warnings, errors), `sections.json`,
 `equations.json`, `flat.tex`, and the downloaded `source/`.
 
+Plot extraction reuses this same `flat.tex` and source tree: parsing does not
+need to be repeated to add it.
+
 ## Step 2: chunk
 
 Splits each section into chunks. Chunks never cross sections and sizes are
@@ -154,6 +183,12 @@ python scripts/chunk.py semantic --parsed-dir outputs/parsed_fastcalo \
 Options shared by all chunkers: `--target-words` (default 400),
 `--overlap-words` (60), and `--exclude-backmatter`, which drops
 acknowledgment/bibliography sections (logged in `section_exclusions.jsonl`).
+
+**Plot chunks.** `--digitized-dirs <digitization run> [...]` adds the extracted
+plot values to any chunker: a summary per series, coordinate tables and one
+overview per figure, each with units, axis scales and provenance (see
+[the plot extraction guide](docs/plot_extractor/guide.md#5-ingest-into-the-chunks)).
+The text chunks are unchanged.
 
 **How the semantic chunker decides.** Every sentence is embedded
 (`--embedding-model`, default `all-MiniLM-L6-v2`). At each sentence boundary
@@ -194,10 +229,8 @@ python scripts/retrieve.py \
   --output-dir outputs/retrieval_semantic_fd100_nobm_dense_explicit_paired_top5 \
   --retriever dense --top-k 5
 ```
-Probably you will need to download the model with
-```
-python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')"
-```
+
+Dense retrieval needs the MiniLM model in the local cache (see [Setup](#setup)).
 
 | Option | Values |
 |---|---|
@@ -210,12 +243,23 @@ python -c "from sentence_transformers import SentenceTransformer; SentenceTransf
 status and the evaluation (`hit`, `hit_rank`, `reciprocal_rank`). The
 manifest summary reports hit@k, MRR and the missed questions.
 
+Plot chunks are ranked together with paper passages; when a panel is retrieved,
+its figure overview is attached once. `contexts.jsonl` keeps `plot_provenance`
+and `axis_metadata`. With `expected_plot_sources` annotations, the summary also
+reports whether the required plot series was retrieved: finding the right paper
+is not enough.
+
 ## Step 4: generate
 
 Sends each question with its saved passages to an Ollama model and asks for
 JSON: `answer_status` (`answered` or `insufficient_evidence`), `answer`,
 `evidence`, `citations` (`["C1", ...]`), `confidence`, `limitations`.
 Retrieval is not re-run: the model sees exactly the passages of step 3.
+
+Plot values reach the model as ordinary text passages, so no multimodal model
+is needed. The prompt tells the model that they are estimates of what the
+figure displays, and that original counts, bin edges and uncertainties cannot
+be inferred from them.
 
 ```bash
 python scripts/generate.py \
@@ -306,11 +350,15 @@ The script:
 
 The live log is `outputs/_slurm_logs/<job-name>-<job-id>.log`. The defaults
 are 1 GPU, 4 CPUs, 16 GB and 1 hour; override them on the command line
-(`sbatch --time=02:00:00 ...`). Set `PYTHON` to use another interpreter.
+(`sbatch --time=02:00:00 ...`). Activate the Python environment before submission
+or export `PYTHON`. `KK_ROOT`, `OLLAMA_BIN`, `OLLAMA_MODELS` and `KK_LOG_DIR`
+configure installation paths and logs. Scheduler bootstrap output is
+`slurm-<job-id>.out` in the submission checkout (ignored by git).
 
 Comparing several models or prompts means several `sbatch` calls, one output
 directory each. Parse, chunk and retrieve run fine on the login node (dense
-retrieval and semantic chunking on CPU take about a minute for this corpus).
+retrieval and semantic chunking use the cached local encoder; runtime depends
+on CPU allocation and passage lengths).
 
 ## Run directories and naming
 
@@ -322,8 +370,9 @@ Rules:
   command, the git commit (and whether the tree had uncommitted changes),
   all parameters, every input file with its sha256, and the summary metrics.
   Each step checks that its input directory comes from the expected step.
-- `outputs/` is not versioned. `outputs_backup/` holds the runs made with the
-  pre-refactor code; it is kept for reference only.
+- `outputs/` is not versioned, and versioned files never refer to its run
+  directories. `outputs_backup/` holds the runs made with the pre-refactor
+  code; it is kept for reference only.
 
 Directory names are chosen by hand. Use this pattern so names stay readable
 and sortable (the manifest is always the authoritative record):
@@ -334,9 +383,10 @@ chunks_<corpus>_<chunker>[_<variant>]
 retrieval_<chunker>_<retriever>_<sources>_<evalset>_top<k>[_<variant>]
 qa_<chunker>_<retriever>_<sources>_<model>_<evalset>_top<k>[_<variant>]
 review_<what is reviewed>
-figures_<corpus>_inventory_v1
-figures_<corpus>_classified_v1
-plots_<corpus>_<source-method>_v1
+figures_<corpus>_inventory[_<variant>]
+figures_<corpus>_classified_<classifier>[_<variant>]
+calibrations_<corpus>_<variant>
+plots_<corpus>_<variant>
 ```
 
 | Field | Values |
@@ -346,21 +396,18 @@ plots_<corpus>_<source-method>_v1
 | retriever | `tfidf`, `dense` (add the model if not MiniLM, e.g. `dense-e5`) |
 | sources | `explicit` = `--source-policy explicit_arxiv`, `allsrc` = `none` |
 | model | `qwen06b`, `qwen4b`, `mistral7b`, ... |
-| evalset | short tag of the questions file: `paired` = `data/questions/fastcalo_paired.jsonl` |
+| evalset | short tag of the questions file: `paired` = `fastcalo_paired.jsonl`, `plots` = `fastcalo_plots.jsonl` |
+| classifier | `vision` (Gemma) or `text` |
 | variant | the one thing that differs from the baseline, e.g. `synthesis`, `np512` |
 
-Figure inventories use `inventory` for the mode and `v1` for inventory schema 1.0;
-classified runs use `classified_v1` for classification rules v1, with schema 1.1.
-The corpus tag follows the same vocabulary (`fastcalo`). Retries append `_retry<N>`.
-Numerical runs use source-method `native`, `hepdata`, `auto` or `compare`, with
-`v1` denoting recovery implementation v1 and numerical schema 1.2.
+Retries append `_retry<N>`.
 
 ## Outputs index
 
-`docs/outputs_index.md` is the versioned list of runs, since `outputs/` is
-not in git. It is generated from the manifests: one table per step with date,
-key parameters and metrics. Free-text notes (what changed compared with which
-baseline, why a run failed) go in `docs/outputs_index_notes.json`:
+`outputs/INDEX.md` lists the local runs, one table per step with date, key
+parameters and metrics, generated from the manifests. Like the runs, it is not
+versioned. Free-text notes (what changed compared with which baseline, why a
+run failed) go in `outputs/index_notes.json`:
 
 ```json
 {"qa_semantic_fd100_nobm_dense_explicit_qwen4b_paired_top5": {"note": "Baseline after the refactor."}}
@@ -397,16 +444,34 @@ Fields (only `question_id` and `question` are required):
 | `required_all_expected_sources` | if true, a hit needs every expected paper (comparison questions) |
 | `reference_answer` | shown to the reviewer next to the model answer |
 | `required_answer_points` | list of points a correct answer must contain, shown to the reviewer |
-| `reference_evidence` | list of `{arxiv_id, section_heading, quote}` supporting the reference answer |
-| `pair_id`, `source_variant`, `question_type` | grouping for analysis and review |
+| `reference_evidence` | source passages (or figure assets and series) supporting the reference answer |
+| `expected_plot_sources` | plot asset/series pairs that retrieval must find, scored separately from papers |
+| `pair_id`, `source_variant`, `question_style`, `question_type` | grouping for analysis and review |
 
 These fields are used for evaluation and review only: they never reach the
 ranking or the prompt. Extra fields are allowed and carried along.
 
-`data/questions/fastcalo_paired.jsonl` (run tag `paired`) has 10 pairs:
-each question appears once naming its arXiv id (`explicit`) and once without
-(`implicit`). 16 are answerable from the corpus and 4 should be refused. The
-reference answers are drafts, not yet validated by an expert.
+`data/questions/fastcalo_paired.jsonl` (run tag `paired`) has 10 pairs on paper
+text: each question appears once naming its arXiv id (`explicit`) and once
+without (`implicit`). 16 are answerable from the corpus and 4 should be refused.
+
+`data/questions/fastcalo_plots.jsonl` (run tag `plots`) has 6 pairs on plot
+values: each question appears once citing the figure (`figure_reference`) and
+once as a natural question with no figure or arXiv id (`natural`). 10 are
+answerable from the extracted values; 2 ask for original event counts and
+should be refused.
+
+| `question_type` | File | Count | Example topic |
+|---|---|---:|---|
+| `fact_lookup` | paired | 2 | simulator name and model family |
+| `method` | paired | 6 | architecture, image representation, Flow I/II |
+| `source_lookup` | paired | 2 | reported speed-up and evaluation time |
+| `comparison` | paired | 6 | approach, likelihood or representations across papers |
+| `no_answer` | paired | 4 | unsupported deployment dates or procedures |
+| `plot_data` | plots | 12 | peaks, ratios, axis scales and units, unavailable counts |
+
+The reference answers are drafts, not yet validated by an expert. Current
+results on the plot questions are in [Plot QA results](docs/plot_extractor/qa_results.md).
 
 ## Tests
 
@@ -428,78 +493,64 @@ fake Ollama cover every step from parsing to the review summary.
 
 Check the license of any other model before adding it.
 
-## KamiPlotExtractor: figure inventory
+## Plot extraction
 
-Task 01 inventories LaTeX `figure`/`figure*` environments from an existing parse
-run, resolves original local graphics, and records captions, labels, verified
-section IDs, explicit subfigures, layout options and SHA256 hashes. It needs no new
-dependencies or downloads and does not change the RAG pipeline.
+`scripts/extract_plots.py` turns the figures of an existing parse run into
+numerical evidence. Retrieval, generation and review do not change.
 
-```bash
-python scripts/extract_plots.py \
-  --parsed-dir outputs/parsed_fastcalo \
-  --output-dir outputs/figures_fastcalo_inventory_v1 \
-  --mode inventory
-```
-
-The new run contains `figures.jsonl`, `panels.jsonl`, `diagnostics.jsonl`,
-`figure_summary.json` and the standard `manifest.json` (`step: extract_plots`).
-Records use schema 1.0 and deterministic IDs linked to existing paper IDs. Missing,
-unsafe or ambiguous asset references remain in the inventory with structured
-warnings. Source assets and previous run directories are never modified.
-After a run, add an outputs-index note and run `python scripts/index_outputs.py`.
-
-Task 02 classifies a saved inventory using conservative textual rules:
+| Mode | What it does | Main output |
+|---|---|---|
+| `inventory` | finds figure environments, captions, labels and figure files | `figures.jsonl` |
+| `classify` | says what each file is (plot type, axes, panels); `--classifier vision` (Gemma, GPU) or `text` | `asset_predictions.jsonl` |
+| `calibrate` | matches tick labels to tick marks and fits linear/log10 axes, units, colour bars; OCR fallback | `calibration_proposals.json`, `review.html` |
+| `digitize` | reads vector paths or colour cells through the calibrated axes | `digitized_data.jsonl` |
+| `digitization-review` | redraws the extracted values next to each source figure | `review.html`, `report.pdf` |
+| `calibration-review` | re-renders the HTML report of a calibration run | `review.html` |
+| `recover`, `benchmark` | optional: original data (PGFPlots, HEPData) and comparison with reference values | |
 
 ```bash
-python scripts/extract_plots.py \
-  --inventory-dir outputs/figures_fastcalo_inventory_v1 \
-  --output-dir outputs/figures_fastcalo_classified_v1 \
-  --mode classify
+P=outputs/parsed_fastcalo
+I=outputs/figures_fastcalo_inventory_v1
+V=outputs/figures_fastcalo_classified_vision_v1
+A=outputs/calibrations_fastcalo_auto_v1
+D=outputs/plots_fastcalo_auto_v1
+
+python scripts/extract_plots.py inventory --parsed-dir $P --output-dir $I
+sbatch scripts/run_ollama.slurm scripts/extract_plots.py classify \
+  --classifier vision --model gemma3:4b --inventory-dir $I --parsed-dir $P --output-dir $V
+# when the classification job has finished:
+python scripts/extract_plots.py calibrate \
+  --classified-dir $V --inventory-dir $I --parsed-dir $P --output-dir $A
+python scripts/extract_plots.py digitize --classified-dir $V --inventory-dir $I --parsed-dir $P \
+  --calibration-file $A/calibration_proposals.json --output-dir $D
+python scripts/extract_plots.py digitization-review --digitized-dir $D \
+  --output-dir outputs/plots_fastcalo_visual_v1
+python scripts/chunk.py sentence --parsed-dir $P --exclude-backmatter \
+  --digitized-dirs $D --output-dir outputs/chunks_fastcalo_sentence_plots_v1
 ```
 
-It writes the same five filenames with schema 1.1, preserving IDs, hashes and
-provenance. It validates the inventory manifest and schema without reopening the
-parse tree or graphics. `FigureClassifier` and `run_classification` are importable
-Python APIs. Previous inventory results remain unchanged in schema 1.0.
+Then run steps 3-5 on the new chunk directory, for example with
+`--questions data/questions/fastcalo_plots.jsonl`. Classification needs a GPU;
+the other modes run on CPU. All dependencies, including the OCR engine, are in
+`requirements.txt`; Gemma is in the shared Ollama store.
 
-A **figure is not necessarily a plot**. Inventory leaves figures `unknown`;
-classification assigns `generic`, `plot`, `mixed` or `unknown`, records explicit
-caption evidence and contradictions, and aggregates separately classified panels.
-Filenames alone cannot decide a class; ambiguous cases remain unknown. Confidence
-is null and every result awaits manual review. Layout cues may flag future visual
-panel detection, but no new panels or image regions are invented.
-Task 03 recovers explicit PGFPlots coordinates/tables and manually mapped HEPData
-submission-format JSON/YAML tables, without digitization:
+Extracted values are estimates of what the figure displays. Calibration and
+digitization report a reason instead of guessing when axes are ambiguous or a
+layout is unsupported; original bins, counts and uncertainties are never
+inferred. So far digitization has been run on the hybrid 2D maps and on one 1D
+figure of the corpus, not yet on every calibrated file.
+
+- [Plot extraction guide](docs/plot_extractor/guide.md): how each step works, outputs, limits, code.
+- [Slides](docs/plot_extractor/KamiKnows_plot_extraction.pdf): the same chain step by step, with examples.
+- [Plot QA results](docs/plot_extractor/qa_results.md): the plot questions and how Qwen and Mistral answer them.
+
+## Rebuild the slides
 
 ```bash
-python scripts/extract_plots.py --mode recover \
-  --classified-dir outputs/figures_fastcalo_classified_v1 \
-  --parsed-dir outputs/parsed_fastcalo \
-  --output-dir outputs/plots_fastcalo_native_v1 \
-  --source-method native
+python docs/slides/build_slides.py
 ```
 
-`run_recovery(...)` is also importable. The run writes `plot_data.jsonl`,
-`recovery_summary.json`, `diagnostics.jsonl` and `manifest.json`, with numerical
-schema 1.2. Source hashes and upstream identities are checked; relocated parse runs
-are accepted when content matches. Keep the original inventory for hash provenance
-(or locate it with `--inventory-dir` after relocation).
-
-`--source-method hepdata --hepdata-dir /path/to/data` reads an explicit
-`mapping.json`; `--hepdata-map` selects another mapping. Networking is **off** unless
-`--enable-hepdata-network` is passed. JSON/native support needs no new dependency;
-YAML and online table downloads require optional `PyYAML>=6`. `auto` retains native
-and mapped published results; `compare` reports differences only for uniquely
-matched point series with explicit compatible axes and units. Candidate/ambiguous
-links never become recovered scientific vectors. No TeX expressions are executed,
-no uncertainty estimates are invented, and no RAG schemas are changed.
-
-The planned `auto`, `pymupdf`, `plotdigitizer`, `chartdetective` and `plotsift`
-digitization backends are all deferred (distinct from recovery's `--source-method auto`);
-the interactive tools will need validated import/export
-workflows, not assumed automation APIs. Automatic inventory checks do not establish
-scientific correctness: manual review pending.
-
-See [the module documentation](docs/kamiplotextractor.md) for the Python API,
-versioned output fields, supported LaTeX, safety rules and known limitations.
+Rebuilds `KamiKnows_pipeline.pdf` and
+`docs/plot_extractor/KamiKnows_plot_extraction.pdf`. The slide content is in
+`docs/slides/build_slides.py`, the layout helpers in `docs/slides/deck.py`;
+fonts (SIL Open Font License / DejaVu license) and images are in the same folder.

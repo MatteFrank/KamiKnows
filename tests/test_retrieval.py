@@ -5,8 +5,14 @@ from kamiknows.common import read_jsonl, read_manifest
 
 
 def chunk(chunk_id, arxiv_id, text):
-    return {"chunk_id": chunk_id, "paper_id": arxiv_id.replace(".", "_"), "arxiv_id": arxiv_id,
-            "title": "", "section_heading": "", "text": text}
+    return {
+        "chunk_id": chunk_id,
+        "paper_id": arxiv_id.replace(".", "_"),
+        "arxiv_id": arxiv_id,
+        "title": "",
+        "section_heading": "",
+        "text": text,
+    }
 
 
 CHUNKS = [
@@ -18,8 +24,9 @@ CHUNKS = [
 
 
 def test_tfidf_ranks_the_matching_chunk_first():
-    passages, constraint = retrieval.retrieve(retrieval.TfidfIndex(CHUNKS), CHUNKS,
-                                              "adversarial network for showers", top_k=2, source_policy="none")
+    passages, constraint = retrieval.retrieve(
+        retrieval.TfidfIndex(CHUNKS), CHUNKS, "adversarial network for showers", top_k=2, source_policy="none"
+    )
     assert [p["chunk_id"] for p in passages] == ["a1", "b2"]
     assert [p["label"] for p in passages] == ["C1", "C2"] and constraint["status"] == "ok"
     assert passages[0]["text"] == CHUNKS[0]["text"]
@@ -38,8 +45,9 @@ def test_explicit_sources_keep_one_chunk_per_named_paper():
     passages, _ = retrieval.retrieve(index, CHUNKS, question, top_k=2, source_policy="explicit_arxiv")
     assert {p["arxiv_id"] for p in passages} == {"1111.00001v1", "2222.00002v1"}
 
-    passages, constraint = retrieval.retrieve(index, CHUNKS, "What is in 3333.00003?", top_k=2,
-                                              source_policy="explicit_arxiv")
+    passages, constraint = retrieval.retrieve(
+        index, CHUNKS, "What is in 3333.00003?", top_k=2, source_policy="explicit_arxiv"
+    )
     assert passages == [] and constraint["status"] == "requested_source_unavailable"
 
 
@@ -47,25 +55,133 @@ def test_evaluate_any_and_all_expected_sources():
     passages = [{"rank": 1, "arxiv_id": "2222.00002v1"}, {"rank": 2, "arxiv_id": "1111.00001v1"}]
     any_hit = retrieval.evaluate(passages, {"expected_arxiv_ids": ["1111.00001v1", "9.9"]})
     assert any_hit["hit"] and any_hit["hit_rank"] == 2
-    all_hit = retrieval.evaluate(passages, {"expected_arxiv_ids": ["1111.00001v1", "2222.00002v1"],
-                                            "required_all_expected_sources": True})
+    all_hit = retrieval.evaluate(
+        passages,
+        {"expected_arxiv_ids": ["1111.00001v1", "2222.00002v1"], "required_all_expected_sources": True},
+    )
     assert all_hit["hit"] and all_hit["hit_rank"] == 2 and all_hit["reciprocal_rank"] == 0.5
     assert retrieval.evaluate(passages, {}) == {"has_expected": False}
 
 
 def test_run_retrieval(parsed_dir, questions_file, tmp_path):
-    chunking.run_chunking(parsed_dir=parsed_dir, output_dir=tmp_path / "chunks", chunker_name="word",
-                          chunker=chunking.make_word_chunker(target_words=100, overlap_words=0),
-                          exclude_backmatter=False, params={})
-    summary = retrieval.run_retrieval(dataset_dir=tmp_path / "chunks", questions_file=questions_file,
-                                      output_dir=tmp_path / "retrieval", retriever="tfidf",
-                                      embedding_model="all-MiniLM-L6-v2", device="cpu", top_k=2,
-                                      source_policy="explicit_arxiv")
+    chunking.run_chunking(
+        parsed_dir=parsed_dir,
+        output_dir=tmp_path / "chunks",
+        chunker_name="word",
+        chunker=chunking.make_word_chunker(target_words=100, overlap_words=0),
+        exclude_backmatter=False,
+        params={},
+    )
+    summary = retrieval.run_retrieval(
+        dataset_dir=tmp_path / "chunks",
+        questions_file=questions_file,
+        output_dir=tmp_path / "retrieval",
+        retriever="tfidf",
+        embedding_model="all-MiniLM-L6-v2",
+        device="cpu",
+        top_k=2,
+        source_policy="explicit_arxiv",
+    )
     assert summary["hits"] == summary["questions_with_expected_sources"] == 2
     contexts = read_jsonl(tmp_path / "retrieval" / "contexts.jsonl")
-    assert contexts[2]["passages"] == [] and contexts[2]["annotations"]["expected_behavior"] == "insufficient_evidence"
+    assert (
+        contexts[2]["passages"] == []
+        and contexts[2]["annotations"]["expected_behavior"] == "insufficient_evidence"
+    )
     assert read_manifest(tmp_path / "retrieval", "retrieve")["params"]["chunker"] == "word"
     with pytest.raises(ValueError, match="'retrieve' run"):
-        retrieval.run_retrieval(dataset_dir=tmp_path / "retrieval", questions_file=questions_file,
-                                output_dir=tmp_path / "x", retriever="tfidf", embedding_model="",
-                                device="cpu", top_k=2, source_policy="none")
+        retrieval.run_retrieval(
+            dataset_dir=tmp_path / "retrieval",
+            questions_file=questions_file,
+            output_dir=tmp_path / "x",
+            retriever="tfidf",
+            embedding_model="",
+            device="cpu",
+            top_k=2,
+            source_policy="none",
+        )
+
+
+def test_figure_overview_sources_are_evaluated_without_ranking_annotations(tmp_path):
+    from kamiknows.common import write_jsonl, write_manifest
+
+    dataset = tmp_path / "dataset"
+    record = chunk("overview", "1111.00001v1", "calorimeter peak energy")
+    record.update(evidence_type="digitized_plot", plot_sources=[{"asset_id": "asset", "series_id": "blue"}])
+    write_jsonl(dataset / "chunks.jsonl", [record])
+    write_manifest(dataset, step="chunk", params={"chunker": "sentence"}, inputs={}, summary={})
+    questions = tmp_path / "questions.jsonl"
+    question = {
+        "question_id": "q",
+        "question": "What is the calorimeter peak energy?",
+        "question_style": "natural",
+        "expected_plot_sources": [{"asset_id": "asset", "series_id": "blue"}],
+    }
+    write_jsonl(questions, [question])
+
+    def run(name):
+        return retrieval.run_retrieval(
+            dataset_dir=dataset,
+            questions_file=questions,
+            output_dir=tmp_path / name,
+            retriever="tfidf",
+            embedding_model="",
+            device="cpu",
+            top_k=1,
+            source_policy="none",
+        )
+
+    summary = run("found")
+    assert summary["plot_evidence_by_style"]["natural"]["all_expected_retrieved"] == 1
+    question["expected_plot_sources"] = [{"asset_id": "missing", "series_id": "red"}]
+    questions = tmp_path / "questions_missing.jsonl"
+    write_jsonl(questions, [question])
+    assert run("missing")["plot_evidence"]["all_expected_retrieved"] == 0
+    assert (
+        read_jsonl(tmp_path / "found" / "contexts.jsonl")[0]["passages"]
+        == read_jsonl(tmp_path / "missing" / "contexts.jsonl")[0]["passages"]
+    )
+
+
+def test_matching_panel_attaches_only_its_own_figure_context():
+    panel = chunk("panel", "1111.00001v1", "brightest calorimeter cell")
+    panel.update(plot_provenance={"asset_id": "panel-a", "series_id": "cells"})
+    overview = chunk("figure-context", "1111.00001v1", "all sibling numerical summaries")
+    overview.update(
+        evidence_level="figure",
+        plot_sources=[
+            {"asset_id": "panel-a", "series_id": "cells"},
+            {"asset_id": "panel-b", "series_id": "cells"},
+        ],
+    )
+    unrelated = chunk("other-context", "2222.00002v1", "unrelated numerical summaries")
+    unrelated.update(evidence_level="figure", plot_sources=[{"asset_id": "panel-a", "series_id": "cells"}])
+
+    class Ranked:
+        def scores(self, question):
+            return [1.0, 0.1, 0.05]
+
+    passages, _ = retrieval.retrieve(
+        Ranked(), [panel, overview, unrelated], "brightest cell", top_k=1, source_policy="none"
+    )
+    assert len(passages) == 1
+    assert passages[0]["figure_context_chunk_id"] == "figure-context"
+    assert passages[0]["plot_sources"][1]["asset_id"] == "panel-b"
+    assert "unrelated" not in passages[0]["text"]
+    assert "Related numerical context" in passages[0]["text"]
+
+
+def test_ranking_can_ignore_presentation_labels_without_removing_them_from_evidence():
+    a = chunk('a', '1111.00001v1', 'display: top-left panel; a long incidental location label')
+    a.update(retrieval_text='jet momentum peak', retrieval_section_heading='Numerical summary')
+    b = {**a, 'text': 'display: bottom-right panel; another location', 'section_heading': 'Different layout'}
+    assert retrieval.TfidfIndex([a]).scores('jet momentum peak') == retrieval.TfidfIndex([b]).scores('jet momentum peak')
+    class Encoder:
+        def encode(self, texts, kind):
+            self.texts = texts
+            return [[1., 0.] for _ in texts]
+    enc = Encoder()
+    retrieval.DenseIndex([a, b], enc)
+    assert enc.texts[0] == enc.texts[1]
+    passages, _ = retrieval.retrieve(retrieval.TfidfIndex([a]), [a], 'jet momentum peak', top_k=1, source_policy='none')
+    assert 'top-left' in passages[0]['text']

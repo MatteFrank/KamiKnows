@@ -10,3 +10,6 @@ outputs_backup/
 
 # OS/editor
 .DS_Store
+
+# Scheduler bootstrap logs (run logs are copied into outputs/)
+slurm-*.out

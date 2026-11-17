@@ -40,7 +40,7 @@ def _key(command: Command) -> tuple[str, tuple[str, ...], bool]:
 
 
 def _signature(document: Document, env: Environment) -> str:
-    return re.sub(r"\s+", "", document.text[env.start:env.end])
+    return re.sub(r"\s+", "", document.text[env.start : env.end])
 
 
 @dataclass
@@ -82,37 +82,63 @@ class SourceTree:
         candidates = self.origins.get(_key(command), [])
         exact = []
         signature = _signature(document, figure)
-        siblings = [c for c in document.commands if c.name == "includegraphics"
-                    and figure.start <= c.start < figure.end and _key(c) == _key(command)]
+        siblings = [
+            c
+            for c in document.commands
+            if c.name == "includegraphics"
+            and figure.start <= c.start < figure.end
+            and _key(c) == _key(command)
+        ]
         ordinal = siblings.index(command)
         for origin in candidates:
             for env in origin.document.environments:
-                if (env.name in {"figure", "figure*"} and env.start <= origin.command.start < env.end
-                        and _signature(origin.document, env) == signature):
-                    matches = [c for c in origin.document.commands if c.name == "includegraphics"
-                               and env.start <= c.start < env.end and _key(c) == _key(command)]
+                if (
+                    env.name in {"figure", "figure*"}
+                    and env.start <= origin.command.start < env.end
+                    and _signature(origin.document, env) == signature
+                ):
+                    matches = [
+                        c
+                        for c in origin.document.commands
+                        if c.name == "includegraphics"
+                        and env.start <= c.start < env.end
+                        and _key(c) == _key(command)
+                    ]
                     if ordinal < len(matches) and matches[ordinal] == origin.command:
                         exact.append(origin)
         return exact or candidates
 
-    def resolve(self, document: Document, figure: Environment, command: Command,
-                asset_id: str, panel_id: str | None) -> dict[str, Any]:
+    def resolve(
+        self, document: Document, figure: Environment, command: Command, asset_id: str, panel_id: str | None
+    ) -> dict[str, Any]:
         origins = self.match(document, figure, command)
         warnings = []
         reference = command.value.strip()
         options = option_values(command.options[-1]) if command.options else {}
         record: dict[str, Any] = {
-            "asset_id": asset_id, "panel_id": panel_id, "reference": reference,
-            "path": None, "format": None, "sha256": None, "status": "unresolved",
+            "asset_id": asset_id,
+            "panel_id": panel_id,
+            "reference": reference,
+            "path": None,
+            "format": None,
+            "sha256": None,
+            "status": "unresolved",
             "flat_span": [command.start, command.end],
-            "includegraphics_raw": document.raw[command.start:command.end],
+            "includegraphics_raw": document.raw[command.start : command.end],
             "options_raw": [document.raw[slice(*span)] for span in command.option_spans],
-            "options": options, "starred": command.starred,
-            "layout": {key: options.get(key) for key in
-                       ("width", "height", "scale", "trim", "viewport", "clip", "angle", "origin", "page")},
-            "source_origins": [{"path": o.path.relative_to(self.root).as_posix(),
-                                "span": [o.command.start, o.command.end]} for o in origins],
-            "graphicspath": list(command.graphicspath), "candidates": [], "warnings": warnings,
+            "options": options,
+            "starred": command.starred,
+            "layout": {
+                key: options.get(key)
+                for key in ("width", "height", "scale", "trim", "viewport", "clip", "angle", "origin", "page")
+            },
+            "source_origins": [
+                {"path": o.path.relative_to(self.root).as_posix(), "span": [o.command.start, o.command.end]}
+                for o in origins
+            ],
+            "graphicspath": list(command.graphicspath),
+            "candidates": [],
+            "warnings": warnings,
         }
 
         def warn(code: str, message: str) -> None:
@@ -127,7 +153,9 @@ class SourceTree:
             warn("unsupported_format", f"Unsupported graphics extension: {suffix}")
             return record
         if not origins:
-            warn("source_origin_unresolved", "No matching includegraphics command in the original .tex files.")
+            warn(
+                "source_origin_unresolved", "No matching includegraphics command in the original .tex files."
+            )
         elif len(origins) > 1:
             warn("source_origin_ambiguous", "Multiple original command locations match; all are retained.")
 
@@ -155,9 +183,15 @@ class SourceTree:
                     continue
                 # Actual directory entries avoid duplicate lower/uppercase candidates
                 # on case-insensitive filesystems without assuming a TeX engine.
-                candidates = [requested] if suffix else sorted(
-                    entry for entry in parent.iterdir()
-                    if entry.stem == requested.name and entry.suffix.lower() in EXTENSIONS)
+                candidates = (
+                    [requested]
+                    if suffix
+                    else sorted(
+                        entry
+                        for entry in parent.iterdir()
+                        if entry.stem == requested.name and entry.suffix.lower() in EXTENSIONS
+                    )
+                )
                 for candidate in candidates:
                     safe = local_path(self.root, candidate)
                     if safe.is_file():
@@ -176,7 +210,8 @@ class SourceTree:
             except OSError as exc:
                 warn("asset_unreadable", str(exc))
                 return record
-            record.update(path=relative, format=path.suffix.lower().lstrip("."),
-                          sha256=digest, status="resolved")
+            record.update(
+                path=relative, format=path.suffix.lower().lstrip("."), sha256=digest, status="resolved"
+            )
             self.inputs[relative] = path
         return record

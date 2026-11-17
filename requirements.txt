@@ -1,6 +1,16 @@
 requests>=2.32
 sentence-transformers>=6.0
 torch>=2.0
-matplotlib>=3.8
+matplotlib>=3.9.1,<4
+fonttools>=4.0
 pytest>=8.0
-sentence-transformers>=3.0.0
+
+# Plot classification and digitization
+PyYAML>=6
+pymupdf>=1.24
+Pillow>=10
+numpy>=2.0,<3
+opencv-python>=4.10,<5
+
+# CPU OCR for raster or outlined axis labels; ONNX models ship in the wheel.
+rapidocr-onnxruntime==1.4.4

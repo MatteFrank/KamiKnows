@@ -16,10 +16,18 @@ conventions. This file lists the rules to follow when working in the repo.
   quality. Automatic checks never establish scientific correctness; say
   "manual review pending" when no human has reviewed the answers.
 
+## Language
+
+- All authored repository content must be in English: code, comments, docstrings,
+  prompts, documentation, CLI messages, diagnostics, reports and generated output.
+- Do not translate user-facing report text into the conversation language.
+- Keep HTML language attributes and test expectations consistent with English.
+
 ## Code
 
 - `kamiknows/` holds the logic, one module per step (`parsing`, `chunking`,
-  `retrieval`, `generation`, `review`) plus `common` and `embeddings`.
+  `retrieval`, `generation`, `review`) plus `common` and `embeddings`; the
+  optional plot extraction route lives in the `plot_extractor/` package.
   `scripts/` only parses arguments and calls one `run_*` function. Do not put
   logic in scripts, and do not import scripts from other code.
 - One command per step; variants are options (sub-commands for the chunker),
@@ -39,6 +47,10 @@ conventions. This file lists the rules to follow when working in the repo.
   change and run `pytest -q` before finishing.
 - Match the existing style: type hints, short docstrings that explain why,
   no dead code, no compatibility shims for removed features.
+- Name things after what they are, not after why they were made: no
+  `demo`, `talk` or `presentation` in identifiers, run names or docs. Method
+  and prompt identifiers carry no iteration counters (`axes_auto`, not
+  `axes_auto_v14`); the manifest already records the git commit.
 
 ## Runs
 
@@ -51,9 +63,12 @@ conventions. This file lists the rules to follow when working in the repo.
 - GPU work (generation) goes through `scripts/run_ollama.slurm`; do not
   start Ollama on the login node. The SLURM log is written to
   `outputs/_slurm_logs/` and copied into the run directory at the end.
-- After every run: add a one-line note in `docs/outputs_index_notes.json`
+- After every run: add a one-line note in `outputs/index_notes.json`
   (what changed compared with which baseline) and run
-  `python scripts/index_outputs.py`.
+  `python scripts/index_outputs.py`, which writes `outputs/INDEX.md`.
+- Versioned files (code, docs, questions, slides) never name directories in
+  `outputs/`: they are not in git. Describe results by their configuration
+  (chunker, retriever, model, questions file, top-k), not by run name.
 - Change one thing at a time when comparing configurations, and compare runs
   on the same questions file and top-k.
 

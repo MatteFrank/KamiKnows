@@ -47,7 +47,9 @@ def number(value: Any) -> int | float:
         return int(decimal)
     result = float(decimal)
     if not (-float("inf") < result < float("inf")) or (result == 0 and decimal != 0):
-        raise DataError("invalid_numeric_value", "Value is outside the supported JSON numeric range; raw token retained.")
+        raise DataError(
+            "invalid_numeric_value", "Value is outside the supported JSON numeric range; raw token retained."
+        )
     return result
 
 
@@ -62,22 +64,39 @@ def _read_bytes(path: Path) -> bytes:
 
 
 def _id(paper: str | None, figure: str | None, panel: str | None, backend: str, source: Any) -> str:
-    digest = hashlib.sha256(json.dumps([paper, figure, panel, backend, source], sort_keys=True).encode()).hexdigest()[:24]
+    digest = hashlib.sha256(
+        json.dumps([paper, figure, panel, backend, source], sort_keys=True).encode()
+    ).hexdigest()[:24]
     return f"{figure or paper or 'unassociated'}::data::{digest}"
 
 
-def data_record(paper_id: str | None, figure: FigureRecord | None, panel: PanelRecord | None,
-                backend: str, source: Any, association: dict[str, Any]) -> PlotDataRecord:
+def data_record(
+    paper_id: str | None,
+    figure: FigureRecord | None,
+    panel: PanelRecord | None,
+    backend: str,
+    source: Any,
+    association: dict[str, Any],
+) -> PlotDataRecord:
     return PlotDataRecord(
-        paper_id=paper_id, figure_id=figure.figure_id if figure else None,
+        paper_id=paper_id,
+        figure_id=figure.figure_id if figure else None,
         panel_id=panel.panel_id if panel else None,
-        data_id=_id(paper_id, figure.figure_id if figure else None, panel.panel_id if panel else None, backend, source),
-        source_method="candidate_data" if association["state"] in {"candidate", "ambiguous"} else "unavailable",
+        data_id=_id(
+            paper_id, figure.figure_id if figure else None, panel.panel_id if panel else None, backend, source
+        ),
+        source_method=(
+            "candidate_data" if association["state"] in {"candidate", "ambiguous"} else "unavailable"
+        ),
         association=association,
-        classification={"figure_type": figure.figure_type if figure else None,
-                        "panel_type": panel.panel_type if panel else None,
-                        "plot_type": panel.plot_type if panel else None},
-        provenance={"sources": [], "source_identity": source}, backend=backend)
+        classification={
+            "figure_type": figure.figure_type if figure else None,
+            "panel_type": panel.panel_type if panel else None,
+            "plot_type": panel.plot_type if panel else None,
+        },
+        provenance={"sources": [], "source_identity": source},
+        backend=backend,
+    )
 
 
 def _skip(text: str, pos: int) -> int:
@@ -96,7 +115,7 @@ def _unbrace(value: str | bool) -> str | bool:
 
 def _options(text: str, pos: int) -> tuple[dict[str, Any], int]:
     pos = _skip(text, pos)
-    if text[pos:pos + 1] != "[":
+    if text[pos : pos + 1] != "[":
         return {}, pos
     value, _, end = group(text, pos, "[")
     return {k: _unbrace(v) for k, v in option_values(value).items()}, end
@@ -113,23 +132,27 @@ def plot_commands(document: Document) -> list[dict[str, Any]]:
             continue
         item: dict[str, Any] = {"start": match.start(), "options": {}, "table_options": {}, "kind": None}
         try:
-            if text[pos:pos + 1] == "3":
+            if text[pos : pos + 1] == "3":
                 raise DataError("unsupported_data_format", "Three-dimensional addplot is not supported.")
-            if text[pos:pos + 1] == "+":
+            if text[pos : pos + 1] == "+":
                 pos += 1
             item["options"], pos = _options(text, pos)
             pos = _skip(text, pos)
             kind = re.match(r"(?:coordinates|table)\b", text[pos:])
             if kind is None:
-                raise DataError("unsupported_expression", "Only literal coordinates and explicit tables are supported.")
+                raise DataError(
+                    "unsupported_expression", "Only literal coordinates and explicit tables are supported."
+                )
             item["kind"] = kind[0]
             pos += len(kind[0])
             if kind[0] == "table":
                 item["table_options"], pos = _options(text, pos)
             item["body"], _, pos = group(text, pos)
             end = _skip(text, pos)
-            if text[end:end + 1] != ";":
-                raise DataError("unsupported_transformation", "Trailing plot paths or transformations are not supported.")
+            if text[end : end + 1] != ";":
+                raise DataError(
+                    "unsupported_transformation", "Trailing plot paths or transformations are not supported."
+                )
             item["end"] = end + 1
             pos = end + 1
         except (ValueError, DataError) as exc:
@@ -139,29 +162,88 @@ def plot_commands(document: Document) -> list[dict[str, Any]]:
             next_plot = text.find("\\addplot", pos)
             pos = min([n for n in (end + 1 if end >= 0 else len(text), next_plot) if n >= 0])
             item["end"] = max(pos, match.end())
-        item["raw"] = document.raw[item["start"]:item["end"]]
+        item["raw"] = document.raw[item["start"] : item["end"]]
         result.append(item)
     return result
 
 
 # Unknown styles may transform numbers. Accept a small explicit visual/metadata
 # vocabulary; failing closed avoids returning source columns as transformed data.
-VISUAL_KEYS = {"width", "height", "title", "xlabel", "ylabel", "x unit", "y unit", "xmode", "ymode",
-               "legend entries", "legend pos", "legend style", "grid", "xmin", "xmax", "ymin", "ymax",
-               "x dir", "y dir", "compat", "name", "mark", "mark size", "mark options", "color", "draw",
-               "fill", "opacity", "line width", "dashed", "dotted", "solid", "thick", "thin", "only marks",
-               "sharp plot", "const plot", "smooth", "ybar", "xbar", "legend columns"}
-ERROR_KEYS = {"error bars/.cd", "y dir", "y explicit", "y explicit relative", "error bars/y dir",
-              "error bars/y explicit", "error bars/y explicit relative"}
-TABLE_KEYS = {"x", "y", "x index", "y index", "col sep", "row sep", "header",
-              "y error", "y error index", "y error plus", "y error minus",
-              "y error plus index", "y error minus index"}
+VISUAL_KEYS = {
+    "width",
+    "height",
+    "title",
+    "xlabel",
+    "ylabel",
+    "x unit",
+    "y unit",
+    "xmode",
+    "ymode",
+    "legend entries",
+    "legend pos",
+    "legend style",
+    "grid",
+    "xmin",
+    "xmax",
+    "ymin",
+    "ymax",
+    "x dir",
+    "y dir",
+    "compat",
+    "name",
+    "mark",
+    "mark size",
+    "mark options",
+    "color",
+    "draw",
+    "fill",
+    "opacity",
+    "line width",
+    "dashed",
+    "dotted",
+    "solid",
+    "thick",
+    "thin",
+    "only marks",
+    "sharp plot",
+    "const plot",
+    "smooth",
+    "ybar",
+    "xbar",
+    "legend columns",
+}
+ERROR_KEYS = {
+    "error bars/.cd",
+    "y dir",
+    "y explicit",
+    "y explicit relative",
+    "error bars/y dir",
+    "error bars/y explicit",
+    "error bars/y explicit relative",
+}
+TABLE_KEYS = {
+    "x",
+    "y",
+    "x index",
+    "y index",
+    "col sep",
+    "row sep",
+    "header",
+    "y error",
+    "y error index",
+    "y error plus",
+    "y error minus",
+    "y error plus index",
+    "y error minus index",
+}
 
 
 def _check_options(options: dict[str, Any], allowed: set[str]) -> None:
     for key in options:
         if "filter" in key or "trafo" in key:
-            raise DataError("unsupported_transformation", f"Coordinate transformation {key!r} is not evaluated.")
+            raise DataError(
+                "unsupported_transformation", f"Coordinate transformation {key!r} is not evaluated."
+            )
         if "expr" in key:
             raise DataError("unsupported_expression", f"Expression option {key!r} is not evaluated.")
         if key not in allowed and not re.fullmatch(r"(?:red|blue|black|green|orange|gray)(?:!\d+)?", key):
@@ -174,11 +256,14 @@ def _coordinates(body: str) -> tuple[list[int | float], list[int | float], list[
     pos = 0
     while (pos := _skip(body, pos)) < len(body):
         if body[pos] != "(":
-            raise DataError("unresolved_macro" if "\\" in body[pos:] else "invalid_numeric_value", "Expected literal (x,y).")
+            raise DataError(
+                "unresolved_macro" if "\\" in body[pos:] else "invalid_numeric_value",
+                "Expected literal (x,y).",
+            )
         end = body.find(")", pos + 1)
         if end < 0:
             raise DataError("invalid_numeric_value", "Unclosed coordinate pair.")
-        pair = [v.strip() for v in body[pos + 1:end].split(",")]
+        pair = [v.strip() for v in body[pos + 1 : end].split(",")]
         if len(pair) != 2:
             raise DataError("invalid_numeric_value", "Only two-dimensional numeric pairs are supported.")
         x.append(number(pair[0]))
@@ -197,7 +282,11 @@ def _table(text: str, options: dict[str, Any]) -> tuple[list[list[str]], list[st
         raise DataError("unsupported_data_format", "Unsupported row separator.")
     if row_sep == "\\\\":
         text = text.replace("\\\\", "\n")
-    lines = [line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith(("#", "%"))]
+    lines = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith(("#", "%"))
+    ]
     separator = options.get("col sep", "space")
     if separator == "space":
         rows = [line.split() for line in lines]
@@ -216,7 +305,9 @@ def _table(text: str, options: dict[str, Any]) -> tuple[list[list[str]], list[st
         if any("\\" in v for v in rows[0]):
             raise DataError("unresolved_macro", "Table header or first row contains macros.")
         if mode == "auto" and any(NUMBER.fullmatch(v) for v in rows[0]):
-            raise DataError("invalid_numeric_value", "Mixed numeric/nonnumeric first row is not accepted as a header.")
+            raise DataError(
+                "invalid_numeric_value", "Mixed numeric/nonnumeric first row is not accepted as a header."
+            )
         header = rows.pop(0)
         if len(set(header)) != len(header):
             raise DataError("ambiguous_columns", "Duplicate table column names.")
@@ -225,8 +316,9 @@ def _table(text: str, options: dict[str, Any]) -> tuple[list[list[str]], list[st
     return rows, header
 
 
-def _column(options: dict[str, Any], name: str, header: list[str] | None, width: int,
-            default: int | None = None) -> tuple[int, str]:
+def _column(
+    options: dict[str, Any], name: str, header: list[str] | None, width: int, default: int | None = None
+) -> tuple[int, str]:
     if name in options and name + " index" in options:
         raise DataError("ambiguous_columns", f"Conflicting selectors for {name}.")
     if name in options:
@@ -255,14 +347,28 @@ def _table_series(text: str, options: dict[str, Any], plot_options: dict[str, An
     defaults = not any(key in options for key in ("x", "y", "x index", "y index"))
     xi, xname = _column(options, "x", header, len(rows[0]), 0 if defaults else None)
     yi, yname = _column(options, "y", header, len(rows[0]), 1 if defaults else None)
-    result = {"x": [number(row[xi]) for row in rows], "y": [number(row[yi]) for row in rows],
-              "raw_values": [[row[xi], row[yi]] for row in rows], "uncertainties": [], "bins": None,
-              "columns": {"x": xname, "y": yname, "default_first_two": defaults}}
+    result = {
+        "x": [number(row[xi]) for row in rows],
+        "y": [number(row[yi]) for row in rows],
+        "raw_values": [[row[xi], row[yi]] for row in rows],
+        "uncertainties": [],
+        "bins": None,
+        "columns": {"x": xname, "y": yname, "default_first_two": defaults},
+    }
     has_error = any(key.startswith("y error") for key in options)
-    explicit = any(key in plot_options for key in ("y explicit", "error bars/y explicit", "y explicit relative",
-                                                   "error bars/y explicit relative"))
+    explicit = any(
+        key in plot_options
+        for key in (
+            "y explicit",
+            "error bars/y explicit",
+            "y explicit relative",
+            "error bars/y explicit relative",
+        )
+    )
     if has_error and not explicit:
-        raise DataError("unsupported_error_syntax", "Error columns require explicit PGFPlots error-bar semantics.")
+        raise DataError(
+            "unsupported_error_syntax", "Error columns require explicit PGFPlots error-bar semantics."
+        )
     if explicit and not has_error:
         raise DataError("unsupported_error_syntax", "Explicit error bars have no supported error columns.")
     if has_error:
@@ -275,13 +381,20 @@ def _table_series(text: str, options: dict[str, Any], plot_options: dict[str, An
         values = [[number(row[index]) for row in rows] for index, _ in columns]
         labels = [name for _, name in columns]
         # Column names are retained, but no stat/sys semantics are guessed from them.
-        result["uncertainties"] = [{"label": None, "kind": None, "axis": "y", "columns": labels,
-                                    "relative": any("relative" in key for key in plot_options),
-                                    "representation": "symmetric" if symmetric else "asymmetric",
-                                    "symerror": values[0] if symmetric else None,
-                                    "plus": values[0] if asymmetric else None,
-                                    "minus": values[1] if asymmetric else None,
-                                    "raw_values": [[row[index] for index, _ in columns] for row in rows]}]
+        result["uncertainties"] = [
+            {
+                "label": None,
+                "kind": None,
+                "axis": "y",
+                "columns": labels,
+                "relative": any("relative" in key for key in plot_options),
+                "representation": "symmetric" if symmetric else "asymmetric",
+                "symerror": values[0] if symmetric else None,
+                "plus": values[0] if asymmetric else None,
+                "minus": values[1] if asymmetric else None,
+                "raw_values": [[row[index] for index, _ in columns] for row in rows],
+            }
+        ]
     return result
 
 
@@ -290,7 +403,9 @@ def _data_path(root: Path, reference: str, origins: list[Path]) -> Path:
     if invalid:
         raise DataError(invalid, f"Unsafe or unresolved data reference: {reference}")
     if Path(reference).suffix.lower() not in {".csv", ".dat", ".txt"}:
-        raise DataError("unsupported_data_format", "Only explicitly referenced CSV/DAT/TXT tables are supported.")
+        raise DataError(
+            "unsupported_data_format", "Only explicitly referenced CSV/DAT/TXT tables are supported."
+        )
     bases = {root, root / "extracted", *(p.parent for p in origins)}
     found = set()
     for base in bases:
@@ -307,8 +422,15 @@ def _data_path(root: Path, reference: str, origins: list[Path]) -> Path:
     return found.pop()
 
 
-def recover_native(*, paper_id: str, flat_path: Path, source_root: Path, figures: list[FigureRecord],
-                   panels: list[PanelRecord], include_generic: bool = False) -> tuple[list[PlotDataRecord], dict[str, Path]]:
+def recover_native(
+    *,
+    paper_id: str,
+    flat_path: Path,
+    source_root: Path,
+    figures: list[FigureRecord],
+    panels: list[PanelRecord],
+    include_generic: bool = False,
+) -> tuple[list[PlotDataRecord], dict[str, Path]]:
     """Recover literal addplot commands linked by verified flat.tex character spans."""
     raw = _read_bytes(flat_path).decode("utf-8", errors="replace")
     document = scan(raw)
@@ -330,33 +452,78 @@ def recover_native(*, paper_id: str, flat_path: Path, source_root: Path, figures
     output = []
     seen_origins: set[tuple[Path, int]] = set()
     for command in commands:
-        owners = [f for f in figures if f.provenance["flat_span"][0] <= command["start"] < f.provenance["flat_span"][1]]
-        figure = min(owners, key=lambda f: f.provenance["flat_span"][1] - f.provenance["flat_span"][0]) if owners else None
-        owned_panels = [p for p in panels if figure and p.figure_id == figure.figure_id
-                        and p.source_region["flat_span"][0] <= command["start"] < p.source_region["flat_span"][1]]
-        panel = min(owned_panels, key=lambda p: p.source_region["flat_span"][1] - p.source_region["flat_span"][0]) if owned_panels else None
-        origin_matches = [(path, item) for path, _, items in originals for item in items if item["raw"] == command["raw"]]
+        owners = [
+            f
+            for f in figures
+            if f.provenance["flat_span"][0] <= command["start"] < f.provenance["flat_span"][1]
+        ]
+        figure = (
+            min(owners, key=lambda f: f.provenance["flat_span"][1] - f.provenance["flat_span"][0])
+            if owners
+            else None
+        )
+        owned_panels = [
+            p
+            for p in panels
+            if figure
+            and p.figure_id == figure.figure_id
+            and p.source_region["flat_span"][0] <= command["start"] < p.source_region["flat_span"][1]
+        ]
+        panel = (
+            min(owned_panels, key=lambda p: p.source_region["flat_span"][1] - p.source_region["flat_span"][0])
+            if owned_panels
+            else None
+        )
+        origin_matches = [
+            (path, item) for path, _, items in originals for item in items if item["raw"] == command["raw"]
+        ]
         seen_origins.update((path, item["start"]) for path, item in origin_matches)
-        if not include_generic and (figure and figure.figure_type == "generic" or panel and panel.panel_type == "generic"):
+        if not include_generic and (
+            figure and figure.figure_type == "generic" or panel and panel.panel_type == "generic"
+        ):
             continue
-        association = {"state": "verified" if figure else "candidate", "kind": "flat_figure_span",
-                       "flat_span": [command["start"], command["end"]],
-                       "source_origins": [{"path": p.relative_to(source_root).as_posix(), "offset": c["start"]}
-                                          for p, c in origin_matches]}
-        record = data_record(paper_id, figure, panel, "native", {"flat_offset": command["start"]}, association)
-        record.raw_source = {"command": command["raw"], "plot_options": command["options"],
-                             "table_options": command["table_options"]}
-        record.provenance["sources"] = [{"role": "flat", "path": f"papers/{paper_id}/flat.tex", "sha256": sha256_file(flat_path)}]
-        record.provenance["sources"].extend({"role": "latex_origin", "path": path.relative_to(source_root).as_posix(),
-                                             "sha256": sha256_file(path)} for path in sorted({p for p, _ in origin_matches}))
+        association = {
+            "state": "verified" if figure else "candidate",
+            "kind": "flat_figure_span",
+            "flat_span": [command["start"], command["end"]],
+            "source_origins": [
+                {"path": p.relative_to(source_root).as_posix(), "offset": c["start"]}
+                for p, c in origin_matches
+            ],
+        }
+        record = data_record(
+            paper_id, figure, panel, "native", {"flat_offset": command["start"]}, association
+        )
+        record.raw_source = {
+            "command": command["raw"],
+            "plot_options": command["options"],
+            "table_options": command["table_options"],
+        }
+        record.provenance["sources"] = [
+            {"role": "flat", "path": f"papers/{paper_id}/flat.tex", "sha256": sha256_file(flat_path)}
+        ]
+        record.provenance["sources"].extend(
+            {
+                "role": "latex_origin",
+                "path": path.relative_to(source_root).as_posix(),
+                "sha256": sha256_file(path),
+            }
+            for path in sorted({p for p, _ in origin_matches})
+        )
         try:
             if not figure:
-                raise DataError("unverified_figure_link", "Plot outside a known figure; numerical data not promoted.")
+                raise DataError(
+                    "unverified_figure_link", "Plot outside a known figure; numerical data not promoted."
+                )
             if "error" in command:
                 raise DataError(*command["error"])
-            axes = [e for e in document.environments if e.name in AXIS_ENVS and e.start < command["start"] < e.end]
+            axes = [
+                e for e in document.environments if e.name in AXIS_ENVS and e.start < command["start"] < e.end
+            ]
             if len(axes) != 1 or not axes[0].closed:
-                raise DataError("unsupported_data_format", "Plot requires one complete supported PGFPlots axis.")
+                raise DataError(
+                    "unsupported_data_format", "Plot requires one complete supported PGFPlots axis."
+                )
             axis = axes[0]
             axis_options, _ = _options(document.text, axis.body_start)
             _check_options(axis_options, VISUAL_KEYS)
@@ -375,14 +542,19 @@ def recover_native(*, paper_id: str, flat_path: Path, source_root: Path, figures
                     scale = "log"
                 if scale is not None and scale not in {"linear", "log"}:
                     raise DataError("unresolved_macro", "Axis scale is not literal linear/log.")
-                axis_metadata[name] = {"label": axis_options.get(name + "label"), "scale": scale,
-                                       "unit": axis_options.get(name + " unit")}
+                axis_metadata[name] = {
+                    "label": axis_options.get(name + "label"),
+                    "scale": scale,
+                    "unit": axis_options.get(name + " unit"),
+                }
             record.axes = axis_metadata
             record.raw_source["axis_options"] = axis_options
             record.provenance["axis_id"] = f"{figure.figure_id}::axis::{axis.start}"
             if command["kind"] == "coordinates":
                 if any("error" in key or "explicit" in key for key in command["options"]):
-                    raise DataError("unsupported_error_syntax", "Coordinate error-bar syntax is not yet supported.")
+                    raise DataError(
+                        "unsupported_error_syntax", "Coordinate error-bar syntax is not yet supported."
+                    )
                 x, y, values = _coordinates(command["body"])
                 series = {"x": x, "y": y, "raw_values": values, "uncertainties": [], "bins": None}
             else:
@@ -394,31 +566,40 @@ def recover_native(*, paper_id: str, flat_path: Path, source_root: Path, figures
                     if len({p.parent for p, _ in origin_matches}) > 1:
                         record.association["state"] = "ambiguous"
                         record.source_method = "candidate_data"
-                        raise DataError("ambiguous_source_origin", "External table command has several possible source directories.")
+                        raise DataError(
+                            "ambiguous_source_origin",
+                            "External table command has several possible source directories.",
+                        )
                     path = _data_path(source_root, body, [p for p, _ in origin_matches])
                     content = _read_bytes(path)
                     relative = path.relative_to(source_root).as_posix()
                     inputs["data:" + relative] = path
-                    record.provenance["sources"].append({"role": "table", "path": relative,
-                                                         "sha256": hashlib.sha256(content).hexdigest()})
+                    record.provenance["sources"].append(
+                        {"role": "table", "path": relative, "sha256": hashlib.sha256(content).hexdigest()}
+                    )
                     table_text = content.decode("utf-8-sig")
                 record.raw_source["table_text"] = table_text
                 series = _table_series(table_text, command["table_options"], command["options"])
             for name in ("x", "y"):
                 if record.axes[name]["scale"] == "log" and any(v <= 0 for v in series[name]):
-                    raise DataError("invalid_numeric_value", "Non-positive values on logarithmic axis would be discarded by PGFPlots.")
+                    raise DataError(
+                        "invalid_numeric_value",
+                        "Non-positive values on logarithmic axis would be discarded by PGFPlots.",
+                    )
             siblings = [c for c in commands if axis.start < c["start"] < axis.end]
             order = siblings.index(command)
             legend = None
             next_start = siblings[order + 1]["start"] if order + 1 < len(siblings) else axis.end
-            entries = list(re.finditer(r"\\addlegendentry\b", document.text[command["end"]:next_start]))
+            entries = list(re.finditer(r"\\addlegendentry\b", document.text[command["end"] : next_start]))
             if len(entries) == 1:
                 legend, _, _ = group(document.text, command["end"] + entries[0].end())
             elif "legend entries" in axis_options:
                 labels = list(option_values(str(axis_options["legend entries"])))
                 if len(labels) == len(siblings):
                     legend = str(_unbrace(labels[order]))
-            series.update(series_id=f"{record.data_id}::series::01", series_index=order, label=legend, qualifiers=[])
+            series.update(
+                series_id=f"{record.data_id}::series::01", series_index=order, label=legend, qualifiers=[]
+            )
             record.series = [series]
             record.source_method = "original_source_data"
             record.extraction_status = "success"
@@ -432,11 +613,19 @@ def recover_native(*, paper_id: str, flat_path: Path, source_root: Path, figures
             if (path, command["start"]) in seen_origins:
                 continue
             relative = path.relative_to(source_root).as_posix()
-            record = data_record(paper_id, None, None, "native", {"path": relative, "offset": command["start"]},
-                                 {"state": "candidate", "kind": "standalone_source_without_figure_link"})
+            record = data_record(
+                paper_id,
+                None,
+                None,
+                "native",
+                {"path": relative, "offset": command["start"]},
+                {"state": "candidate", "kind": "standalone_source_without_figure_link"},
+            )
             record.raw_source = {"command": command["raw"]}
             record.provenance["sources"] = [{"path": relative, "sha256": sha256_file(path)}]
-            record.warnings = [issue("unverified_figure_link", "Standalone plot has no unambiguous flat figure association.")]
+            record.warnings = [
+                issue("unverified_figure_link", "Standalone plot has no unambiguous flat figure association.")
+            ]
             output.append(record)
     return output, inputs
 
@@ -454,11 +643,18 @@ def decode_hepdata(content: bytes, suffix: str) -> tuple[dict[str, Any], str]:
         try:
             import yaml
         except ImportError as exc:
-            raise DataError("optional_dependency_missing", "Install optional PyYAML>=6 for YAML, or provide submission-format JSON.") from exc
+            raise DataError(
+                "optional_dependency_missing",
+                "Install optional PyYAML>=6 for YAML, or provide submission-format JSON.",
+            ) from exc
+
         # Reject alias graphs before constructing objects; YAML is untrusted input.
         class ExactSafeLoader(yaml.SafeLoader):
             pass
-        ExactSafeLoader.add_constructor("tag:yaml.org,2002:float", lambda loader, node: loader.construct_scalar(node))
+
+        ExactSafeLoader.add_constructor(
+            "tag:yaml.org,2002:float", lambda loader, node: loader.construct_scalar(node)
+        )
         try:
             if any(isinstance(token, yaml.tokens.AliasToken) for token in yaml.scan(text)):
                 raise DataError("unsupported_data_format", "YAML aliases are not accepted.")
@@ -485,7 +681,16 @@ def load_hepdata_mapping(path: Path) -> list[dict[str, Any]]:
     for entry in data["mappings"]:
         if not isinstance(entry, dict):
             raise DataError("unsupported_data_format", "Invalid mapping entry.")
-        for key in ("paper_id", "arxiv_id", "figure_id", "latex_label", "panel_id", "record_id", "table_name", "source_file"):
+        for key in (
+            "paper_id",
+            "arxiv_id",
+            "figure_id",
+            "latex_label",
+            "panel_id",
+            "record_id",
+            "table_name",
+            "source_file",
+        ):
             if entry.get(key) is not None and not isinstance(entry[key], str):
                 raise DataError("unsupported_data_format", f"Mapping {key} must be a string.")
         identity = json.dumps(entry, sort_keys=True)
@@ -508,26 +713,40 @@ def _published_value(value: Any) -> dict[str, Any]:
 def _published_error(value: Any) -> dict[str, Any]:
     percentage = isinstance(value, str) and value.strip().endswith("%")
     parsed = _published_value(value.strip()[:-1] if percentage else value)
-    return {**parsed, "raw": deepcopy(value), "relative": percentage,
-            "unit": "percent" if percentage else None}
+    return {
+        **parsed,
+        "raw": deepcopy(value),
+        "relative": percentage,
+        "unit": "percent" if percentage else None,
+    }
 
 
-def parse_hepdata_table(table: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+def parse_hepdata_table(
+    table: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """Retain multidimensional coordinates and every published uncertainty component."""
     independent = table.get("independent_variables")
     dependent = table.get("dependent_variables")
     if not isinstance(independent, list) or not isinstance(dependent, list):
-        raise DataError("unsupported_data_format", "Expected HEPData independent_variables and dependent_variables lists.")
+        raise DataError(
+            "unsupported_data_format", "Expected HEPData independent_variables and dependent_variables lists."
+        )
     columns = independent + dependent
     for column in columns:
-        if (not isinstance(column, dict) or not isinstance(column.get("header"), dict)
-                or not isinstance(column.get("values"), list)
-                or any(not isinstance(cell, dict) for cell in column["values"])):
+        if (
+            not isinstance(column, dict)
+            or not isinstance(column.get("header"), dict)
+            or not isinstance(column.get("values"), list)
+            or any(not isinstance(cell, dict) for cell in column["values"])
+        ):
             raise DataError("unsupported_data_format", "Malformed HEPData column.")
     if len({len(column["values"]) for column in columns}) > 1:
         raise DataError("invalid_numeric_value", "HEPData columns have different row counts.")
-    axes = {"independent_variables": [deepcopy(c["header"]) for c in independent],
-            "dependent_variables": [deepcopy(c["header"]) for c in dependent], "scales": None}
+    axes = {
+        "independent_variables": [deepcopy(c["header"]) for c in independent],
+        "dependent_variables": [deepcopy(c["header"]) for c in dependent],
+        "scales": None,
+    }
     coordinates = []
     warnings = []
     for column in independent:
@@ -535,9 +754,14 @@ def parse_hepdata_table(table: dict[str, Any]) -> tuple[dict[str, Any], list[dic
         for cell in column["values"]:
             if ("low" in cell) != ("high" in cell):
                 raise DataError("invalid_numeric_value", "HEPData bin must specify both limits.")
-            cells.append({"value": _published_value(cell.get("value")),
-                          "low": _published_value(cell.get("low")), "high": _published_value(cell.get("high")),
-                          "raw": deepcopy(cell)})
+            cells.append(
+                {
+                    "value": _published_value(cell.get("value")),
+                    "low": _published_value(cell.get("low")),
+                    "high": _published_value(cell.get("high")),
+                    "raw": deepcopy(cell),
+                }
+            )
         coordinates.append({"header": deepcopy(column["header"]), "values": cells})
     series = []
     for column in dependent:
@@ -565,20 +789,44 @@ def parse_hepdata_table(table: dict[str, Any]) -> tuple[dict[str, Any], list[dic
                 else:
                     asymmetric = component["asymerror"]
                     if not isinstance(asymmetric, dict) or not {"plus", "minus"} <= asymmetric.keys():
-                        raise DataError("unsupported_data_format", "Asymmetric error requires plus and minus values.")
-                    parsed["asymerror"] = {key: _published_error(asymmetric[key]) for key in ("plus", "minus")}
+                        raise DataError(
+                            "unsupported_data_format", "Asymmetric error requires plus and minus values."
+                        )
+                    parsed["asymerror"] = {
+                        key: _published_error(asymmetric[key]) for key in ("plus", "minus")
+                    }
                 components.append(parsed)
             errors.append({"row": row, "components": components})
         if any(cell["state"] != "numeric" for cell in values):
-            warnings.append(issue("missing_or_nonnumeric_published_value", "Published missing/textual values retained as explicit null states."))
+            warnings.append(
+                issue(
+                    "missing_or_nonnumeric_published_value",
+                    "Published missing/textual values retained as explicit null states.",
+                )
+            )
         # Do not compute bin midpoints or project multi-dimensional measurements.
         x = [c["value"]["value"] for c in coordinates[0]["values"]] if len(coordinates) == 1 else None
-        bins = ([{"low": c["low"]["value"], "high": c["high"]["value"], "raw": c["raw"]}
-                 for c in coordinates[0]["values"]] if len(coordinates) == 1 else None)
-        series.append({"label": column["header"].get("name"), "header": deepcopy(column["header"]),
-                       "qualifiers": deepcopy(column.get("qualifiers", [])), "independent_variables": deepcopy(coordinates),
-                       "x": x, "y": [v["value"] for v in values], "value_states": values, "bins": bins,
-                       "uncertainties": errors})
+        bins = (
+            [
+                {"low": c["low"]["value"], "high": c["high"]["value"], "raw": c["raw"]}
+                for c in coordinates[0]["values"]
+            ]
+            if len(coordinates) == 1
+            else None
+        )
+        series.append(
+            {
+                "label": column["header"].get("name"),
+                "header": deepcopy(column["header"]),
+                "qualifiers": deepcopy(column.get("qualifiers", [])),
+                "independent_variables": deepcopy(coordinates),
+                "x": x,
+                "y": [v["value"] for v in values],
+                "value_states": values,
+                "bins": bins,
+                "uncertainties": errors,
+            }
+        )
     return axes, series, warnings
 
 
@@ -587,9 +835,16 @@ def _arxiv(value: str) -> str:
     return re.sub(r"v\d+$", "", value.removeprefix("arXiv:").strip())
 
 
-def recover_hepdata(*, figures: list[FigureRecord], panels: list[PanelRecord], papers: list[dict[str, Any]],
-                    mappings: list[dict[str, Any]], root: Path, enable_network: bool = False,
-                    include_generic: bool = False) -> tuple[list[PlotDataRecord], dict[str, Path]]:
+def recover_hepdata(
+    *,
+    figures: list[FigureRecord],
+    panels: list[PanelRecord],
+    papers: list[dict[str, Any]],
+    mappings: list[dict[str, Any]],
+    root: Path,
+    enable_network: bool = False,
+    include_generic: bool = False,
+) -> tuple[list[PlotDataRecord], dict[str, Path]]:
     """Promote only explicit, unambiguous paper/figure/table mappings."""
     records = []
     inputs = {}
@@ -597,13 +852,24 @@ def recover_hepdata(*, figures: list[FigureRecord], panels: list[PanelRecord], p
     eligible = [f for f in figures if include_generic or f.figure_type != "generic"]
     covered = set()
     for entry in mappings:
-        candidates = [f for f in eligible if (not entry.get("figure_id") or f.figure_id == entry["figure_id"])
-                      and (not entry.get("latex_label") or entry["latex_label"] in f.latex_labels
-                           or entry["latex_label"] == f.latex_label)]
+        candidates = [
+            f
+            for f in eligible
+            if (not entry.get("figure_id") or f.figure_id == entry["figure_id"])
+            and (
+                not entry.get("latex_label")
+                or entry["latex_label"] in f.latex_labels
+                or entry["latex_label"] == f.latex_label
+            )
+        ]
         if entry.get("paper_id"):
             candidates = [f for f in candidates if f.paper_id == entry["paper_id"]]
         if entry.get("arxiv_id"):
-            candidates = [f for f in candidates if _arxiv(str(paper_map[f.paper_id].get("arxiv_id", ""))) == _arxiv(entry["arxiv_id"])]
+            candidates = [
+                f
+                for f in candidates
+                if _arxiv(str(paper_map[f.paper_id].get("arxiv_id", ""))) == _arxiv(entry["arxiv_id"])
+            ]
         publication_known = bool(entry.get("paper_id") or entry.get("arxiv_id"))
         target_known = bool(entry.get("figure_id") or entry.get("latex_label"))
         if not candidates:
@@ -619,24 +885,47 @@ def recover_hepdata(*, figures: list[FigureRecord], panels: list[PanelRecord], p
         figure = candidates[0] if len(candidates) == 1 else None
         panel = None
         if entry.get("panel_id"):
-            matches = [p for p in panels if figure and p.figure_id == figure.figure_id and p.panel_id == entry["panel_id"]]
+            matches = [
+                p
+                for p in panels
+                if figure and p.figure_id == figure.figure_id and p.panel_id == entry["panel_id"]
+            ]
             if len(matches) == 1 and (include_generic or matches[0].panel_type != "generic"):
                 panel = matches[0]
             else:
                 state = "unmatched"
         paper_id = figure.paper_id if figure else entry.get("paper_id")
-        identity = {key: entry.get(key) for key in ("record_id", "table_name", "source_file", "figure_id", "latex_label", "panel_id")}
-        record = data_record(paper_id, figure, panel, "hepdata", identity,
-                             {"state": state, "kind": "explicit_user_mapping", "mapping": deepcopy(entry),
-                              "candidate_figure_ids": [f.figure_id for f in candidates]})
+        identity = {
+            key: entry.get(key)
+            for key in ("record_id", "table_name", "source_file", "figure_id", "latex_label", "panel_id")
+        }
+        record = data_record(
+            paper_id,
+            figure,
+            panel,
+            "hepdata",
+            identity,
+            {
+                "state": state,
+                "kind": "explicit_user_mapping",
+                "mapping": deepcopy(entry),
+                "candidate_figure_ids": [f.figure_id for f in candidates],
+            },
+        )
         if figure:
             covered.add(figure.figure_id)
         try:
             if state != "verified":
-                raise DataError("hepdata_" + state, "Publication identity alone or ambiguous targets cannot verify a figure/table link.")
+                raise DataError(
+                    "hepdata_" + state,
+                    "Publication identity alone or ambiguous targets cannot verify a figure/table link.",
+                )
             if not re.fullmatch(r"(?:ins)?\d+", entry["record_id"]):
                 record.association["state"] = "unmatched"
-                raise DataError("invalid_hepdata_reference", "record_id must be a numeric HEPData ID or ins-prefixed INSPIRE ID.")
+                raise DataError(
+                    "invalid_hepdata_reference",
+                    "record_id must be a numeric HEPData ID or ins-prefixed INSPIRE ID.",
+                )
             if entry.get("source_file"):
                 invalid = _literal_path(entry["source_file"])
                 if invalid:
@@ -662,29 +951,55 @@ def recover_hepdata(*, figures: list[FigureRecord], panels: list[PanelRecord], p
             record.backend_version = version
             record.provenance["sources"] = [origin]
             record.raw_source["table"] = table
-            if (table.get("arxiv_id") and _arxiv(str(table["arxiv_id"])) != _arxiv(str(paper_map[figure.paper_id].get("arxiv_id", "")))
-                    or any(table.get(key) is not None and str(table[key]) != entry[key] for key in ("record_id", "table_name"))):
+            if (
+                table.get("arxiv_id")
+                and _arxiv(str(table["arxiv_id"]))
+                != _arxiv(str(paper_map[figure.paper_id].get("arxiv_id", "")))
+                or any(
+                    table.get(key) is not None and str(table[key]) != entry[key]
+                    for key in ("record_id", "table_name")
+                )
+            ):
                 record.association["state"] = "unmatched"
-                raise DataError("hepdata_identity_mismatch", "Table metadata contradicts the explicit mapping.")
+                raise DataError(
+                    "hepdata_identity_mismatch", "Table metadata contradicts the explicit mapping."
+                )
             axes, series, warnings = parse_hepdata_table(table)
             record.axes = axes
-            record.series = [{**s, "series_id": f"{record.data_id}::series::{i + 1:02d}", "series_index": i}
-                             for i, s in enumerate(series)]
+            record.series = [
+                {**s, "series_id": f"{record.data_id}::series::{i + 1:02d}", "series_index": i}
+                for i, s in enumerate(series)
+            ]
             record.warnings.extend(warnings)
             if any(v is not None for s in series for v in s["y"]):
                 record.source_method = "original_published_data"
                 record.extraction_status = "partial" if warnings else "success"
                 record.validation_status = "structural_checks_passed"
             else:
-                record.warnings.append(issue("no_numeric_published_values", "Table contains no recoverable numeric dependent values."))
+                record.warnings.append(
+                    issue(
+                        "no_numeric_published_values",
+                        "Table contains no recoverable numeric dependent values.",
+                    )
+                )
         except (ValueError, OSError) as exc:
-            record.warnings.append(issue(exc.code if isinstance(exc, DataError) else "hepdata_input_error", str(exc)))
+            record.warnings.append(
+                issue(exc.code if isinstance(exc, DataError) else "hepdata_input_error", str(exc))
+            )
         records.append(record)
     for figure in eligible:
         if figure.figure_id not in covered:
-            record = data_record(figure.paper_id, figure, None, "hepdata", "no_mapping",
-                                 {"state": "unmatched", "kind": "no_explicit_mapping"})
-            record.warnings = [issue("hepdata_unmatched", "No explicit HEPData table mapping for this figure.")]
+            record = data_record(
+                figure.paper_id,
+                figure,
+                None,
+                "hepdata",
+                "no_mapping",
+                {"state": "unmatched", "kind": "no_explicit_mapping"},
+            )
+            record.warnings = [
+                issue("hepdata_unmatched", "No explicit HEPData table mapping for this figure.")
+            ]
             records.append(record)
     return records, inputs
 
@@ -692,16 +1007,28 @@ def recover_hepdata(*, figures: list[FigureRecord], panels: list[PanelRecord], p
 def fetch_hepdata(record_id: str, table_name: str) -> tuple[bytes, str]:
     """Bounded opt-in download using the official record format/table endpoint."""
     if not re.fullmatch(r"(?:ins)?\d+", record_id) or not table_name or len(table_name) > 300:
-        raise DataError("invalid_hepdata_reference", "Expected a numeric HEPData/ins record ID and explicit table name.")
-    initial = "https://www.hepdata.net/record/" + record_id + "?" + urlencode({"format": "yaml", "table": table_name})
+        raise DataError(
+            "invalid_hepdata_reference", "Expected a numeric HEPData/ins record ID and explicit table name."
+        )
+    initial = (
+        "https://www.hepdata.net/record/"
+        + record_id
+        + "?"
+        + urlencode({"format": "yaml", "table": table_name})
+    )
     last_error = ""
     for _ in range(3):
         url = initial
         try:
             for _ in range(4):
                 parts = urlparse(url)
-                if (parts.scheme != "https" or parts.hostname != "www.hepdata.net"
-                        or parts.port not in {None, 443} or parts.username or parts.password):
+                if (
+                    parts.scheme != "https"
+                    or parts.hostname != "www.hepdata.net"
+                    or parts.port not in {None, 443}
+                    or parts.username
+                    or parts.password
+                ):
                     raise DataError("unsafe_path", "HEPData redirect outside the allowed HTTPS host.")
                 with requests.get(url, timeout=(10, 20), stream=True, allow_redirects=False) as response:
                     if response.status_code in {301, 302, 303, 307, 308}:
@@ -712,7 +1039,9 @@ def fetch_hepdata(record_id: str, table_name: str) -> tuple[bytes, str]:
                         continue
                     response.raise_for_status()
                     if "text/html" in response.headers.get("Content-Type", ""):
-                        raise DataError("unsupported_data_format", "Received HTML instead of a HEPData table.")
+                        raise DataError(
+                            "unsupported_data_format", "Received HTML instead of a HEPData table."
+                        )
                     length = response.headers.get("Content-Length")
                     if length and int(length) > MAX_SOURCE_BYTES:
                         raise DataError("source_too_large", "HEPData download exceeds the size limit.")
@@ -741,39 +1070,76 @@ def compare_sources(records: list[PlotDataRecord]) -> list[dict[str, Any]]:
                 independent = other.axes.get("independent_variables", [])
                 for target in other.series:
                     header = target["header"]
-                    if (not series.get("label") or series["label"] != target.get("label") or len(independent) != 1
-                            or series.get("qualifiers") != target.get("qualifiers")
-                            or any(not native.axes[axis].get(key) for axis in ("x", "y") for key in ("label", "unit"))):
+                    if (
+                        not series.get("label")
+                        or series["label"] != target.get("label")
+                        or len(independent) != 1
+                        or series.get("qualifiers") != target.get("qualifiers")
+                        or any(
+                            not native.axes[axis].get(key) for axis in ("x", "y") for key in ("label", "unit")
+                        )
+                    ):
                         continue
-                    if (native.axes["x"]["label"] != independent[0].get("name")
-                            or native.axes["x"]["unit"] != independent[0].get("units")
-                            or native.axes["y"]["label"] != header.get("name")
-                            or native.axes["y"]["unit"] != header.get("units")
-                            or any(b["raw"].get("low") is not None or b["raw"].get("high") is not None for b in target["bins"] or [])):
+                    if (
+                        native.axes["x"]["label"] != independent[0].get("name")
+                        or native.axes["x"]["unit"] != independent[0].get("units")
+                        or native.axes["y"]["label"] != header.get("name")
+                        or native.axes["y"]["unit"] != header.get("units")
+                        or any(
+                            b["raw"].get("low") is not None or b["raw"].get("high") is not None
+                            for b in target["bins"] or []
+                        )
+                    ):
                         continue
                     candidates.append((other, target))
-            comparison: dict[str, Any] = {"native_data_id": native.data_id, "native_series_id": series["series_id"],
-                                          "status": "not_comparable", "reason": "no_unique_explicit_series_and_axes_match"}
-            same_named = [s for r in records if r.source_method == "original_source_data"
-                          and r.figure_id == native.figure_id and r.panel_id == native.panel_id
-                          for s in r.series if s.get("label") == series.get("label")]
+            comparison: dict[str, Any] = {
+                "native_data_id": native.data_id,
+                "native_series_id": series["series_id"],
+                "status": "not_comparable",
+                "reason": "no_unique_explicit_series_and_axes_match",
+            }
+            same_named = [
+                s
+                for r in records
+                if r.source_method == "original_source_data"
+                and r.figure_id == native.figure_id
+                and r.panel_id == native.panel_id
+                for s in r.series
+                if s.get("label") == series.get("label")
+            ]
             if len(candidates) == 1 and len(same_named) == 1:
                 other, target = candidates[0]
                 comparison.update(hepdata_data_id=other.data_id, hepdata_series_id=target["series_id"])
                 raw_x = [str(c["value"]["raw"]) for c in target["independent_variables"][0]["values"]]
-                if (len(series["x"]) != len(raw_x) or any(v is None for v in target["x"])
-                        or any(Decimal(row[0]) != Decimal(x) for row, x in zip(series["raw_values"], raw_x))
-                        or len(series["y"]) != len(target["y"])
-                        or any(y is None for y in target["y"])):
+                if (
+                    len(series["x"]) != len(raw_x)
+                    or any(v is None for v in target["x"])
+                    or any(Decimal(row[0]) != Decimal(x) for row, x in zip(series["raw_values"], raw_x))
+                    or len(series["y"]) != len(target["y"])
+                    or any(y is None for y in target["y"])
+                ):
                     comparison["reason"] = "different_coordinates_or_missing_values"
                 else:
                     with localcontext() as context:
-                        context.prec = max(50, max((len(str(s)) for s in series["raw_values"] + target["value_states"]), default=0) * 2)
-                        differences = [Decimal(raw[1]) - Decimal(str(value["raw"]))
-                                       for raw, value in zip(series["raw_values"], target["value_states"])]
-                    comparison.update(status="compared", reason="exact_series_label_axes_units_and_coordinates",
-                                      y_differences=[str(v) for v in differences],
-                                      max_abs_y_difference=str(max(map(abs, differences), default=Decimal(0))),
-                                      uncertainty_comparison="not_performed", scientific_agreement="manual_review_pending")
+                        context.prec = max(
+                            50,
+                            max(
+                                (len(str(s)) for s in series["raw_values"] + target["value_states"]),
+                                default=0,
+                            )
+                            * 2,
+                        )
+                        differences = [
+                            Decimal(raw[1]) - Decimal(str(value["raw"]))
+                            for raw, value in zip(series["raw_values"], target["value_states"])
+                        ]
+                    comparison.update(
+                        status="compared",
+                        reason="exact_series_label_axes_units_and_coordinates",
+                        y_differences=[str(v) for v in differences],
+                        max_abs_y_difference=str(max(map(abs, differences), default=Decimal(0))),
+                        uncertainty_comparison="not_performed",
+                        scientific_agreement="manual_review_pending",
+                    )
             results.append(comparison)
     return results

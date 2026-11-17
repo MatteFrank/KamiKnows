@@ -97,44 +97,64 @@ OUTPUT_FORMAT = """Return only valid JSON with this exact shape:
 }
 """
 
+NUMERICAL_EVIDENCE_INSTRUCTIONS = """For numerical evidence, preserve the supplied physical units and series association.
+Logarithmic axis spacing does not change the unit of already calibrated values.
+Use captions, visible series labels and paper references when describing figures, not internal storage IDs.
+Do not present source-inventory numbering as verified printed figure numbering.
+If the relevant figure or series is ambiguous, identify the ambiguity or abstain instead of choosing silently.
+Do not infer original event counts, bin edges or experimental uncertainties from displayed normalized heights.
+"""
+
 
 # Prompt
 
+
 def build_prompt(context: dict[str, Any], prompt: str) -> str:
     blocks = [
-        "\n".join([
-            f"[{p['label']}]",
-            f"chunk_id: {p['chunk_id']}",
-            f"paper_id: {p['paper_id']}",
-            f"arxiv_id: {p['arxiv_id']}",
-            f"title: {p['title']}",
-            f"section: {p['section_heading']}",
-            "text:",
-            p["text"],
-        ])
+        "\n".join(
+            [
+                f"[{p['label']}]",
+                f"chunk_id: {p['chunk_id']}",
+                f"paper_id: {p['paper_id']}",
+                f"arxiv_id: {p['arxiv_id']}",
+                f"title: {p['title']}",
+                f"section: {p['section_heading']}",
+                "text:",
+                p["text"],
+            ]
+        )
         for p in context["passages"]
     ]
     constraint = context["source_constraint"]
     source_note = ""
     if constraint["requested_arxiv_ids"]:
-        source_note = ("Requested sources: " + ", ".join(constraint["requested_arxiv_ids"])
-                       + ". Attribute each claim to its source; comparisons must distinguish each paper.\n")
+        source_note = (
+            "Requested sources: "
+            + ", ".join(constraint["requested_arxiv_ids"])
+            + ". Attribute each claim to its source; comparisons must distinguish each paper.\n"
+        )
         if constraint["status"] != "ok":
-            source_note += ("Requested evidence is unavailable or source budget is insufficient. "
-                            "Set answer_status to insufficient_evidence.\n")
-    return "\n".join([
-        PROMPTS[prompt],
-        source_note,
-        OUTPUT_FORMAT,
-        "Question:",
-        context["question"],
-        "",
-        "Retrieved context:",
-        "\n\n".join(blocks) if blocks else "<NO_CONTEXT>",
-    ])
+            source_note += (
+                "Requested evidence is unavailable or source budget is insufficient. "
+                "Set answer_status to insufficient_evidence.\n"
+            )
+    return "\n".join(
+        [
+            PROMPTS[prompt],
+            NUMERICAL_EVIDENCE_INSTRUCTIONS,
+            source_note,
+            OUTPUT_FORMAT,
+            "Question:",
+            context["question"],
+            "",
+            "Retrieved context:",
+            "\n\n".join(blocks) if blocks else "<NO_CONTEXT>",
+        ]
+    )
 
 
 # Ollama
+
 
 def list_ollama_models(base_url: str) -> list[str]:
     response = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=10)
@@ -151,14 +171,17 @@ def check_model(model: str, base_url: str) -> None:
         raise RuntimeError(f"model {model!r} is not installed in Ollama; available: {available}")
 
 
-def ollama_generate(prompt: str, *, model: str, options: dict[str, Any], base_url: str,
-                    timeout_seconds: int) -> tuple[str, dict[str, Any]]:
+def ollama_generate(
+    prompt: str, *, model: str, options: dict[str, Any], base_url: str, timeout_seconds: int
+) -> tuple[str, dict[str, Any]]:
     """Ask for JSON output; retry once without the JSON constraint if the reply is empty."""
     for response_format in ("json", None):
         payload = {"model": model, "prompt": prompt, "stream": False, "options": options}
         if response_format:
             payload["format"] = response_format
-        response = requests.post(f"{base_url.rstrip('/')}/api/generate", json=payload, timeout=timeout_seconds)
+        response = requests.post(
+            f"{base_url.rstrip('/')}/api/generate", json=payload, timeout=timeout_seconds
+        )
         response.raise_for_status()
         data = response.json()
         text = (data.get("response") or "").strip()
@@ -174,6 +197,7 @@ def ollama_generate(prompt: str, *, model: str, options: dict[str, Any], base_ur
 
 # Parsing and citation validation
 
+
 def parse_response(raw: str) -> tuple[dict[str, Any], list[str]]:
     """Read the model JSON; a non-JSON reply is kept as answer text with a warning."""
     warnings = []
@@ -184,8 +208,11 @@ def parse_response(raw: str) -> tuple[dict[str, Any], list[str]]:
         parsed = _load_json_object(extracted) if extracted else None
         warnings.append("json_extracted_from_response" if parsed is not None else "json_parse_error")
     if parsed is None:
-        parsed = {"answer_status": "answered" if text else "insufficient_evidence", "answer": text,
-                  "citations": extract_labels(text)}
+        parsed = {
+            "answer_status": "answered" if text else "insufficient_evidence",
+            "answer": text,
+            "citations": extract_labels(text),
+        }
     status = str(parsed.get("answer_status") or "").strip()
     if status not in ANSWER_STATUSES:
         warnings.append("invalid_answer_status")
@@ -227,12 +254,23 @@ def validate_citations(answer: dict[str, Any], passages: list[dict[str, Any]]) -
         status = "answered_without_citation"
     else:
         status = "valid"
-    return {"status": status, "valid_labels": valid, "invented_labels": invented,
-            "cited_chunk_ids": [by_label[label] for label in valid]}
+    return {
+        "status": status,
+        "valid_labels": valid,
+        "invented_labels": invented,
+        "cited_chunk_ids": [by_label[label] for label in valid],
+    }
 
 
-def answer_question(context: dict[str, Any], *, model: str, prompt: str, options: dict[str, Any],
-                    base_url: str, timeout_seconds: int) -> dict[str, Any]:
+def answer_question(
+    context: dict[str, Any],
+    *,
+    model: str,
+    prompt: str,
+    options: dict[str, Any],
+    base_url: str,
+    timeout_seconds: int,
+) -> dict[str, Any]:
     """Generate and validate one answer; backend failures become a record, not an exception."""
     prompt_text = build_prompt(context, prompt)
     record: dict[str, Any] = {
@@ -241,20 +279,33 @@ def answer_question(context: dict[str, Any], *, model: str, prompt: str, options
         "prompt_sha256": hashlib.sha256(prompt_text.encode()).hexdigest(),
     }
     try:
-        raw, generation = ollama_generate(prompt_text, model=model, options=options,
-                                          base_url=base_url, timeout_seconds=timeout_seconds)
+        raw, generation = ollama_generate(
+            prompt_text, model=model, options=options, base_url=base_url, timeout_seconds=timeout_seconds
+        )
     except (requests.RequestException, RuntimeError) as exc:
-        return {**record, "answer_status": "backend_error", "backend_error": str(exc),
-                "warnings": ["backend_error"], "grounding_status": "not_reviewed"}
+        return {
+            **record,
+            "answer_status": "backend_error",
+            "backend_error": str(exc),
+            "warnings": ["backend_error"],
+            "grounding_status": "not_reviewed",
+        }
     answer, warnings = parse_response(raw)
     citation = validate_citations(answer, context["passages"])
     if citation["status"] != "valid":
         warnings.append(citation["status"])
     if generation["done_reason"] == "length":
         warnings.append("truncated_at_token_limit")
-    return {**record, **answer, "citation_validation": citation, "warnings": warnings,
-            "generation": generation, "raw_response": raw, "backend_error": None,
-            "grounding_status": "not_reviewed"}
+    return {
+        **record,
+        **answer,
+        "citation_validation": citation,
+        "warnings": warnings,
+        "generation": generation,
+        "raw_response": raw,
+        "backend_error": None,
+        "grounding_status": "not_reviewed",
+    }
 
 
 def _load_json_object(text: str) -> dict[str, Any] | None:
@@ -287,7 +338,7 @@ def _first_json_object(text: str) -> str:
         elif char == "}":
             depth -= 1
             if depth == 0:
-                return text[start:index + 1]
+                return text[start : index + 1]
     return ""
 
 
@@ -300,17 +351,31 @@ def answer_metrics(answers: list[dict[str, Any]], contexts: list[dict[str, Any]]
         "answers": len(answers),
         "answer_status": dict(Counter(a["answer_status"] for a in answers)),
         "answer_status_by_expected_behavior": {k: dict(v) for k, v in sorted(by_expected.items())},
-        "citation_status": dict(Counter(a["citation_validation"]["status"] for a in answers
-                                        if a["answer_status"] != "backend_error")),
+        "citation_status": dict(
+            Counter(
+                a["citation_validation"]["status"] for a in answers if a["answer_status"] != "backend_error"
+            )
+        ),
         "warnings": dict(Counter(w for a in answers for w in a["warnings"])),
     }
 
 
 # Step entry point
 
-def run_generation(*, retrieval_dir: Path, output_dir: Path, model: str, prompt: str,
-                   question_ids: list[str] | None, temperature: float, top_p: float, num_predict: int,
-                   timeout_seconds: int, base_url: str) -> dict[str, Any]:
+
+def run_generation(
+    *,
+    retrieval_dir: Path,
+    output_dir: Path,
+    model: str,
+    prompt: str,
+    question_ids: list[str] | None,
+    temperature: float,
+    top_p: float,
+    num_predict: int,
+    timeout_seconds: int,
+    base_url: str,
+) -> dict[str, Any]:
     if prompt not in PROMPTS:
         raise ValueError(f"unknown prompt {prompt!r}; choose from {sorted(PROMPTS)}")
     retrieval = read_manifest(retrieval_dir, "retrieve")
@@ -327,19 +392,38 @@ def run_generation(*, retrieval_dir: Path, output_dir: Path, model: str, prompt:
     answers = []
     with open_jsonl(output_dir / "answers.jsonl") as write:
         for index, context in enumerate(contexts, start=1):
-            answer = answer_question(context, model=model, prompt=prompt, options=options,
-                                     base_url=base_url, timeout_seconds=timeout_seconds)
+            answer = answer_question(
+                context,
+                model=model,
+                prompt=prompt,
+                options=options,
+                base_url=base_url,
+                timeout_seconds=timeout_seconds,
+            )
             write(answer)
             answers.append(answer)
-            print(f"[{index}/{len(contexts)}] {context['question_id']}: {answer['answer_status']} "
-                  f"{' '.join(answer['warnings'])}", flush=True)
+            print(
+                f"[{index}/{len(contexts)}] {context['question_id']}: {answer['answer_status']} "
+                f"{' '.join(answer['warnings'])}",
+                flush=True,
+            )
     summary = answer_metrics(answers, contexts)
     write_manifest(
-        output_dir, step="generate",
-        params={"model": model, "prompt": prompt, "question_ids": question_ids, **options,
-                "timeout_seconds": timeout_seconds, "base_url": base_url, "retrieval_dir": retrieval_dir,
-                "retriever": retrieval["params"]["retriever"], "chunker": retrieval["params"]["chunker"],
-                "top_k": retrieval["params"]["top_k"], "source_policy": retrieval["params"]["source_policy"]},
+        output_dir,
+        step="generate",
+        params={
+            "model": model,
+            "prompt": prompt,
+            "question_ids": question_ids,
+            **options,
+            "timeout_seconds": timeout_seconds,
+            "base_url": base_url,
+            "retrieval_dir": retrieval_dir,
+            "retriever": retrieval["params"]["retriever"],
+            "chunker": retrieval["params"]["chunker"],
+            "top_k": retrieval["params"]["top_k"],
+            "source_policy": retrieval["params"]["source_policy"],
+        },
         inputs={"contexts": retrieval_dir / "contexts.jsonl"},
         summary=summary,
     )

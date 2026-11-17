@@ -90,8 +90,18 @@ def mask_noncode(raw: str) -> tuple[str, list[dict[str, Any]]]:
 
     text = "".join(chars)
     pos = 0
-    definitions = {"newcommand", "renewcommand", "providecommand", "DeclareRobustCommand",
-                   "newenvironment", "renewenvironment", "def", "gdef", "edef", "xdef"}
+    definitions = {
+        "newcommand",
+        "renewcommand",
+        "providecommand",
+        "DeclareRobustCommand",
+        "newenvironment",
+        "renewenvironment",
+        "def",
+        "gdef",
+        "edef",
+        "xdef",
+    }
     while match := COMMAND.search(text, pos):
         pos = match.end()
         if match[1] not in definitions:
@@ -103,20 +113,22 @@ def mask_noncode(raw: str) -> tuple[str, list[dict[str, Any]]]:
                     raise ValueError("missing definition body")
                 _, _, end = group(text, body)
             else:
-                pos = _space(text, pos + (text[pos:pos + 1] == "*"))
-                if text[pos:pos + 1] == "{":
+                pos = _space(text, pos + (text[pos : pos + 1] == "*"))
+                if text[pos : pos + 1] == "{":
                     _, _, pos = group(text, pos)
                 else:
                     macro = COMMAND.match(text, pos)
                     if macro is None:
                         raise ValueError("missing macro name")
                     pos = macro.end()
-                while text[_space(text, pos):_space(text, pos) + 1] == "[":
+                while text[_space(text, pos) : _space(text, pos) + 1] == "[":
                     _, _, pos = group(text, pos, "[")
                 _, _, end = group(text, pos)
                 if match[1] in {"newenvironment", "renewenvironment"}:
                     _, _, end = group(text, end)
-            warnings.append(issue("macro_definition_skipped", "Macro definitions are not expanded.", match.start()))
+            warnings.append(
+                issue("macro_definition_skipped", "Macro definitions are not expanded.", match.start())
+            )
             blank(match.start(), end)
             pos = end
         except ValueError as exc:
@@ -161,13 +173,29 @@ def scan(raw: str) -> Document:
     commands: list[Command] = []
     environments: list[Environment] = []
     env_stack: list[Environment] = []
-    known = {"begin", "end", "includegraphics", "graphicspath", "caption", "label",
-             "subcaption", "subfigure", "subfloat", "subcaptionbox", "input", "include",
-             "section", "subsection", "subsubsection"}
+    known = {
+        "begin",
+        "end",
+        "includegraphics",
+        "graphicspath",
+        "caption",
+        "label",
+        "subcaption",
+        "subfigure",
+        "subfloat",
+        "subcaptionbox",
+        "input",
+        "include",
+        "section",
+        "subsection",
+        "subsubsection",
+    }
 
     def walk(start: int, stop: int, paths: tuple[str, ...], depth: int = 0) -> None:
         if depth > 128:
-            warnings.append(issue("nesting_limit", "Group nesting exceeds the inventory limit of 128.", start))
+            warnings.append(
+                issue("nesting_limit", "Group nesting exceeds the inventory limit of 128.", start)
+            )
             return
         scopes: list[tuple[str, ...]] = []
         pos = start
@@ -189,16 +217,22 @@ def scan(raw: str) -> Document:
             name = match[1]
             if name not in known:
                 if name.startswith("if") or name in {"else", "fi"}:
-                    warnings.append(issue("conditional_not_evaluated", "Conditional branches are inventoried literally.", pos))
+                    warnings.append(
+                        issue(
+                            "conditional_not_evaluated",
+                            "Conditional branches are inventoried literally.",
+                            pos,
+                        )
+                    )
                 pos = match.end()
                 continue
             cursor = match.end()
-            starred = text[cursor:cursor + 1] == "*"
+            starred = text[cursor : cursor + 1] == "*"
             cursor += starred
             options = []
             option_spans = []
             try:
-                while text[_space(text, cursor):_space(text, cursor) + 1] == "[":
+                while text[_space(text, cursor) : _space(text, cursor) + 1] == "[":
                     option, option_start, cursor = group(text, cursor, "[")
                     options.append(option)
                     option_spans.append((option_start, cursor - 1))
@@ -207,7 +241,7 @@ def scan(raw: str) -> Document:
                 body_span = None
                 if name == "subcaptionbox":
                     cursor = end
-                    while text[_space(text, cursor):_space(text, cursor) + 1] == "[":
+                    while text[_space(text, cursor) : _space(text, cursor) + 1] == "[":
                         option, option_start, cursor = group(text, cursor, "[")
                         options.append(option)
                         option_spans.append((option_start, cursor - 1))
@@ -215,7 +249,9 @@ def scan(raw: str) -> Document:
                     body_span = (body, end - 1)
                 elif name in {"subfigure", "subfloat"}:
                     body_span = (body, end - 1)
-                command = Command(name, pos, end, value, options, starred, paths, body_span, value_span, option_spans)
+                command = Command(
+                    name, pos, end, value, options, starred, paths, body_span, value_span, option_spans
+                )
                 commands.append(command)
                 if name == "begin":
                     env = Environment(value, pos, end, stop, False)
@@ -223,13 +259,14 @@ def scan(raw: str) -> Document:
                     environments.append(env)
                     scopes.append(paths)
                 elif name == "end":
-                    index = next((i for i in range(len(env_stack) - 1, -1, -1)
-                                  if env_stack[i].name == value), None)
+                    index = next(
+                        (i for i in range(len(env_stack) - 1, -1, -1) if env_stack[i].name == value), None
+                    )
                     if index is None:
                         warnings.append(issue("unmatched_environment_end", value, pos))
                     else:
                         closing_count = len(env_stack) - index
-                        for unclosed in env_stack[index + 1:]:
+                        for unclosed in env_stack[index + 1 :]:
                             unclosed.end = pos
                         env_stack[index].end = end
                         env_stack[index].closed = True
@@ -261,8 +298,13 @@ def scan(raw: str) -> Document:
     for env in environments:
         if not env.closed:
             warnings.append(issue("unclosed_environment", env.name, env.start))
-    return Document(raw, text, sorted(commands, key=lambda c: c.start),
-                    sorted(environments, key=lambda e: e.start), warnings)
+    return Document(
+        raw,
+        text,
+        sorted(commands, key=lambda c: c.start),
+        sorted(environments, key=lambda e: e.start),
+        warnings,
+    )
 
 
 def option_values(raw: str) -> dict[str, str | bool]:

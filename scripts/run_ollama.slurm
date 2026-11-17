@@ -19,17 +19,17 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --time=01:00:00
-#SBATCH --output=/home/e/eapicell/KamiKnows/outputs/_slurm_logs/%x-%j.log
+#SBATCH --output=slurm-%j.out
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 
-PYTHON="${PYTHON:-/home/e/eapicell/.conda/envs/kamiknows/bin/python}"
+PYTHON="${PYTHON:-python}"
 KK_ROOT="${KK_ROOT:-/storage-hpc/kamiknows}"
-OLLAMA_BIN="$KK_ROOT/software/ollama/bin/ollama"
-export OLLAMA_MODELS="$KK_ROOT/models/ollama"
+OLLAMA_BIN="${OLLAMA_BIN:-$KK_ROOT/software/ollama/bin/ollama}"
+export OLLAMA_MODELS="${OLLAMA_MODELS:-$KK_ROOT/models/ollama}"
 export OLLAMA_HOST="127.0.0.1:$((11400 + ${SLURM_JOB_ID:-0} % 500))"
-LOG_DIR=outputs/_slurm_logs
+LOG_DIR="${KK_LOG_DIR:-outputs/_slurm_logs}"
 OLLAMA_LOG="$LOG_DIR/ollama-${SLURM_JOB_ID:-local}.log"
 
 if [ $# -eq 0 ]; then
@@ -49,6 +49,10 @@ for arg in "$@"; do
 done
 
 mkdir -p "$LOG_DIR"
+# SLURM opens its output before the script can create directories. Capture the
+# command log inside the checkout and copy it into the completed run.
+COMMAND_LOG="$LOG_DIR/${SLURM_JOB_NAME:-KK}-${SLURM_JOB_ID:-local}.log"
+exec > >(tee -a "$COMMAND_LOG") 2>&1
 "$OLLAMA_BIN" serve > "$OLLAMA_LOG" 2>&1 &
 OLLAMA_PID=$!
 
@@ -56,7 +60,7 @@ finish() {
   kill "$OLLAMA_PID" 2>/dev/null || true
   if [ -n "$OUTPUT_DIR" ] && [ -d "$OUTPUT_DIR" ]; then
     cp "$OLLAMA_LOG" "$OUTPUT_DIR/ollama.log" 2>/dev/null || true
-    cp "$LOG_DIR/${SLURM_JOB_NAME:-KK}-${SLURM_JOB_ID:-local}.log" "$OUTPUT_DIR/slurm.log" 2>/dev/null || true
+    cp "$COMMAND_LOG" "$OUTPUT_DIR/slurm.log" 2>/dev/null || true
   fi
 }
 trap finish EXIT
@@ -68,5 +72,8 @@ for _ in $(seq 60); do
 done
 curl -sf "http://$OLLAMA_HOST/api/tags" > /dev/null || { echo "Ollama did not start" >&2; exit 1; }
 echo "Ollama ready on $OLLAMA_HOST"
+if [ -n "${OLLAMA_PULL_MODEL:-}" ]; then
+  "$OLLAMA_BIN" pull "$OLLAMA_PULL_MODEL"
+fi
 
 "$PYTHON" -u "$@" --base-url "http://$OLLAMA_HOST"
