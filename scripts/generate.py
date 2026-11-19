@@ -34,15 +34,21 @@ def main(argv: list[str] | None = None) -> int:
                         help="sampling temperature; 0 makes answers reproducible (default: 0.0)")
     parser.add_argument("--top-p", type=float, default=0.9, help="nucleus sampling (default: 0.9)")
     parser.add_argument("--num-predict", type=int, default=1024, help="maximum answer tokens (default: 1024)")
+    parser.add_argument("--num-ctx", type=int, default=32768,
+                        help="model context in tokens; fixed so prompts with plot tables are never truncated "
+                             "by a server default (default: 32768)")
     parser.add_argument("--timeout-seconds", type=int, default=300, help="per answer (default: 300)")
+    parser.add_argument("--solver", action="store_true",
+                        help="plan and compute plot numbers with kamiknows.compute before answering")
     parser.add_argument("--base-url", default="http://127.0.0.1:11434",
                         help="Ollama server; set by run_ollama.slurm (default: http://127.0.0.1:11434)")
     args = parser.parse_args(argv)
     try:
         summary = run_generation(retrieval_dir=args.retrieval_dir, output_dir=args.output_dir, model=args.model,
                                  prompt=args.prompt, question_ids=args.question_ids,
-                                 temperature=args.temperature, top_p=args.top_p, num_predict=args.num_predict,
-                                 timeout_seconds=args.timeout_seconds, base_url=args.base_url)
+                                 temperature=args.temperature, top_p=args.top_p, num_predict=args.num_predict, num_ctx=args.num_ctx,
+                                 timeout_seconds=args.timeout_seconds, base_url=args.base_url,
+                                 solver=args.solver)
     except (OSError, ValueError, RuntimeError) as exc:
         print(f"generate failed: {exc}", file=sys.stderr)
         return 1

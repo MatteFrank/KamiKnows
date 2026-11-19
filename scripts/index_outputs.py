@@ -28,6 +28,7 @@ STEPS = {
     "generate": ("Generation runs", ["chunker", "retriever", "model", "prompt", "num_predict"], ["answer_status"]),
     "review": ("Manual reviews", [], ["rows", "runs"]),
     "chat": ("Chat sessions", ["retriever", "model"], ["turns"]),
+    "compute": ("Compute runs", ["plans", "rel_tol"], ["with_plan", "status_counts", "matched"]),
 }
 
 

@@ -71,7 +71,7 @@ STOPWORDS = {
 }
 ARXIV_REFERENCE = re.compile(
     r"(?<![\w./])(?:arxiv\s*:\s*|https?://(?:www\.)?arxiv\.org/(?:abs|pdf)/)?"
-    r"(?P<id>(?:\d{4}\.\d{4,5}|[a-z][a-z.-]*/\d{7})(?:v[1-9]\d*)?)(?:\.pdf)?(?![\w]|\.\d)",
+    r"(?P<id>(?:\d{4}[._]\d{4,5}|[a-z][a-z.-]*/\d{7})(?:v[1-9]\d*)?)(?:\.pdf)?(?![\w]|\.\d)",
     re.IGNORECASE,
 )
 VERSION = re.compile(r"v[1-9]\d*$", re.IGNORECASE)
@@ -153,7 +153,10 @@ def extract_arxiv_ids(text: str) -> list[str]:
 
     An unversioned id covers every version, so a versioned duplicate is dropped.
     """
-    ids = list(dict.fromkeys(match.group("id").lower() for match in ARXIV_REFERENCE.finditer(text)))
+    # 1705_02355v2 is the repository's file-safe form of 1705.02355v2.
+    ids = list(dict.fromkeys(
+        re.sub(r"^(\d{4})_", r"\1.", match.group("id").lower()) for match in ARXIV_REFERENCE.finditer(text)
+    ))
     unversioned = {i for i in ids if not VERSION.search(i)}
     return [i for i in ids if not VERSION.search(i) or VERSION.sub("", i) not in unversioned]
 
@@ -165,9 +168,21 @@ def matches_source(arxiv_id: str, requested: str) -> bool:
 
 
 def retrieve(
-    index, chunks: list[dict[str, Any]], question: str, *, top_k: int, source_policy: str
+    index,
+    chunks: list[dict[str, Any]],
+    question: str,
+    *,
+    top_k: int,
+    source_policy: str,
+    max_plots_per_figure: int | None = 1,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Return the passages for one question and the source-constraint diagnostics."""
+    """Return the passages for one question and the source-constraint diagnostics.
+
+    ``max_plots_per_figure`` caps the plot chunks of one figure among the
+    passages (None: no cap). The panels of a multi-panel figure share caption and discussion,
+    so they score alike and can fill every slot; one panel is enough, because
+    each plot chunk lists all the panels of its figure (``figure_panels``).
+    """
     requested = extract_arxiv_ids(question) if source_policy == "explicit_arxiv" else []
     candidates = [
         i
@@ -190,6 +205,17 @@ def retrieve(
 
     scores = index.scores(question)
     ranked = sorted(candidates, key=lambda i: (-scores[i], chunks[i]["chunk_id"]))
+    if max_plots_per_figure is not None:
+        figures: Counter = Counter()
+
+        def admitted(i: int) -> bool:
+            link = chunks[i].get("plot_link")
+            if link is None:
+                return True
+            figures[link["figure_id"]] += 1
+            return figures[link["figure_id"]] <= max_plots_per_figure
+
+        ranked = [i for i in ranked if admitted(i)]
     selected = {next(i for i in ranked if matches_source(chunks[i]["arxiv_id"], r)) for r in requested}
     for i in ranked:
         if len(selected) >= top_k:
@@ -207,39 +233,9 @@ def retrieve(
                     key: chunk[key]
                     for key in ("chunk_id", "paper_id", "arxiv_id", "title", "section_heading", "text")
                 },
-                **{
-                    key: chunk[key]
-                    for key in (
-                        "evidence_type",
-                        "plot_provenance",
-                        "axis_metadata",
-                        "plot_reference",
-                        "plot_sources",
-                        "evidence_level",
-                    )
-                    if key in chunk
-                },
+                **{key: chunk[key] for key in ("evidence_type", "plot_link") if key in chunk},
             }
         )
-    # A relevant panel identifies its parent figure. Attach that figure's
-    # bounded numerical overview once, rather than requiring each sibling panel
-    # to independently win a top-k slot. Ranking still uses the question alone.
-    figure_overviews = {}
-    for chunk in chunks:
-        if chunk.get("evidence_level") == "figure":
-            for source in chunk.get("plot_sources", []):
-                figure_overviews[(chunk["paper_id"], source["asset_id"], source["series_id"])] = chunk
-    expanded = {p["chunk_id"] for p in passages if p.get("evidence_level") == "figure"}
-    for passage in passages:
-        source = passage.get("plot_provenance", {})
-        overview = figure_overviews.get(
-            (passage["paper_id"], source.get("asset_id"), source.get("series_id"))
-        )
-        if overview is not None and overview["chunk_id"] not in expanded:
-            expanded.add(overview["chunk_id"])
-            passage["text"] += "\n\nRelated numerical context from the same figure:\n" + overview["text"]
-            passage["plot_sources"] = overview["plot_sources"]
-            passage["figure_context_chunk_id"] = overview["chunk_id"]
     return passages, constraint
 
 
@@ -312,9 +308,12 @@ def run_retrieval(
     device: str,
     top_k: int,
     source_policy: str,
+    max_plots_per_figure: int | None = 1,
 ) -> dict[str, Any]:
     if top_k < 1:
         raise ValueError("top_k must be >= 1")
+    if max_plots_per_figure is not None and max_plots_per_figure < 1:
+        raise ValueError("max_plots_per_figure must be >= 1")
     dataset = read_manifest(dataset_dir, "chunk")
     chunks = read_jsonl(dataset_dir / "chunks.jsonl")
     questions = load_questions(questions_file)
@@ -324,20 +323,19 @@ def run_retrieval(
     records = []
     for question in questions:
         passages, constraint = retrieve(
-            index, chunks, question["question"], top_k=top_k, source_policy=source_policy
+            index, chunks, question["question"], top_k=top_k, source_policy=source_policy,
+            max_plots_per_figure=max_plots_per_figure,
         )
         evaluation = evaluate(passages, question)
         if question.get("expected_plot_sources"):
             expected_plots = question["expected_plot_sources"]
-            present = {
-                (p.get("plot_provenance", {}).get("asset_id"), p.get("plot_provenance", {}).get("series_id"))
+            linked = [
+                panel
                 for p in passages
-            }
-            present.update(
-                (source["asset_id"], source["series_id"])
-                for p in passages
-                for source in p.get("plot_sources", [])
-            )
+                if "plot_link" in p
+                for panel in [p["plot_link"], *p["plot_link"].get("figure_panels", [])]
+            ]
+            present = {(panel["asset_id"], series["series_id"]) for panel in linked for series in panel["series"]}
             missing = [e for e in expected_plots if (e["asset_id"], e["series_id"]) not in present]
             evaluation["plot_evidence"] = {"all_expected_retrieved": not missing, "missing": missing}
         records.append(
@@ -384,6 +382,7 @@ def run_retrieval(
         "retriever": retriever,
         "top_k": top_k,
         "source_policy": source_policy,
+        "max_plots_per_figure": max_plots_per_figure,
         "chunker": dataset["params"]["chunker"],
         "dataset_dir": dataset_dir,
     }

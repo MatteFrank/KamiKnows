@@ -18,6 +18,7 @@ with --exclude-backmatter, + ``semantic_boundaries.jsonl`` and optional
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 from collections import Counter, defaultdict
@@ -568,265 +569,214 @@ def _figure_layout(figure: dict, flat_tex: str) -> dict[str, str]:
     return result
 
 
-def _plot_references(record: dict, figure: dict, series: dict, series_index: int) -> dict:
-    """Describe figures and observed series colours without exposing storage IDs or guessing legends."""
-    assets = figure.get("source_assets", [])
-    asset = record["provenance"]["asset_id"]
-    image_index = next(i for i, a in enumerate(assets, 1) if a["asset_id"] == asset)
-    suffix = figure["figure_id"].rsplit("::", 1)[-1]
-    number = str(int(suffix)) if suffix.isdigit() else None
-    reference = f"Figure {number}" if number else "Source figure"
-    image = f"source image {image_index} of {len(assets)}"
+def _figure_name(figure_id: str) -> str:
+    suffix = figure_id.rsplit("::", 1)[-1]
+    return f"Figure {int(suffix)}" if suffix.isdigit() else "Source figure"
+
+
+def _series_label(record: dict, series: dict, index: int) -> str:
+    """Name a series by its legend label, else by its observed colour; legends are never guessed."""
+    if series.get("label"):
+        return series["label"]
     colour = series.get("raster_color_rgb")
     if colour is None:
-        spec = next(
-            (
-                s
-                for s in record.get("calibration", {}).get("series", [])
-                if s.get("series_id") == series["series_id"]
-            ),
-            {},
-        )
+        spec = next((s for s in record.get("calibration", {}).get("series", [])
+                     if s.get("series_id") == series["series_id"]), {})
         indices = spec.get("path_indices", [])
         paths = record.get("raw_source", {}).get("paths", [])
         if indices and indices[0] < len(paths):
             colour = paths[indices[0]].get("color")
-    label = series.get("label")
-    if not label and isinstance(colour, (list, tuple)) and len(colour) == 3:
-        r, g, b = colour[:3]
-        # Dominant hue is observed geometry; caption-to-dataset assignment is not inferred here.
-        dominant = sorted(zip((r, g, b), ("red", "green", "blue")), reverse=True)
+    if isinstance(colour, (list, tuple)) and len(colour) == 3:
+        dominant = sorted(zip(colour, ("red", "green", "blue")), reverse=True)
         if dominant[0][0] > 0.25 and dominant[0][0] > 1.8 * max(dominant[1][0], 0.05):
-            label = dominant[0][1] + " curve"
-    label = label or (
-        "heatmap cells" if series.get("geometry") == "histogram_2d_cells" else f"series {series_index}"
-    )
-    return {
-        "figure": reference,
-        "image": image,
-        "series": label,
-        "caption": figure.get("caption") or "Uncaptioned figure",
-        "latex_label": figure.get("latex_label"),
-        "number_basis": "source inventory order; paper numbering requires verification",
-    }
+            return dominant[0][1] + " curve"
+    return "heatmap cells" if series.get("geometry") == "histogram_2d_cells" else f"series {index}"
 
 
-def digitized_chunks(
-    directories: list[Path], papers: list[dict[str, Any]], *, include_overviews: bool = True
-) -> tuple[list[dict], dict]:
-    """Publish successful displayed geometry as auditable evidence, never as original measurements."""
-    import hashlib
-    from kamiknows.plot_extractor.records import series_axis_metadata
+PLOT_KINDS = {
+    "histogram_2d_cells": "heatmap (2D cells, value shown by colour)",
+    "rendered_step_intervals": "1D histogram (drawn steps)",
+    "rendered_curve_samples": "curve (sampled line)",
+}
+DISPLAYED_ONLY = ("Values estimate the displayed figure, not the original measurements; "
+                  "original bins, counts and uncertainties are not available.")
+
+
+def plot_chunks(directory: Path | None, papers: list[dict[str, Any]]) -> tuple[list[dict], dict]:
+    """One chunk per plotted image (a plot, or one panel of a multi-panel figure).
+
+    The chunk describes the plot so that retrieval can find it: caption, the
+    paper sentences that cite it, panel position, axes and units, and a few
+    characteristic numbers (ranges, maximum) computed by kamiknows.compute.
+    It never holds the extracted values: ``plot_link`` names the digitized
+    record and the compute handles of its series, so a retrieved chunk leads
+    to its data. Plots that were not digitized get a chunk saying why, so a
+    question about them finds them instead of a wrong plot that has values.
+    """
+    from kamiknows.compute.sources.plots import DATA_FILE
     from kamiknows.plot_extractor.classification import reference_contexts
 
-    chunks, inputs, seen = [], {}, set()
-    discussions, overview_groups, layouts = {}, {}, {}
+    if directory is None:
+        return [], {}
     by_paper = {p["paper_id"]: p for p in papers}
-    for run_number, directory in enumerate(directories):
-        directory = Path(directory).resolve()
-        manifest = read_manifest(directory, "extract_plots")
-        data = directory / "digitized_data.jsonl"
-        if (
-            manifest["params"].get("mode") != "digitize"
-            or sha256_file(data) != manifest["summary"]["data_sha256"]
-        ):
-            raise ValueError("expected an intact digitization run")
-        inputs[f"digitization_manifest_{run_number}"] = directory / "manifest.json"
-        inputs[f"digitized_data_{run_number}"] = data
-        source = manifest["inputs"]["classified_figures"]
-        classified = Path(source["path"])
-        if sha256_file(classified) != source["sha256"]:
-            raise ValueError("classified figure hash mismatch")
-        inputs[f"plot_figures_{run_number}"] = classified
-        figures = {f["figure_id"]: f for f in read_jsonl(classified)}
-        for record in read_jsonl(data):
-            if record["extraction_status"] != "success":
-                continue
-            if record.get("quality", {}).get("structural_validity") != "passed":
-                raise ValueError("successful plot record lacks structural checks")
-            if record["paper_id"] not in by_paper:
-                raise ValueError("digitized paper is outside the parsed corpus")
-            provenance = record["provenance"]
-            identity = (record["figure_id"], provenance["asset_id"])
-            if identity in seen:
-                raise ValueError("duplicate plot asset across digitization runs")
-            seen.add(identity)
-            figure = figures[record["figure_id"]]
-            if record["figure_id"] not in discussions:
-                flat = manifest.get("inputs", {}).get(record["paper_id"] + ":flat")
-                discussion = ""
-                if flat:
-                    flat_path = Path(flat["path"])
-                    if sha256_file(flat_path) != flat["sha256"]:
-                        raise ValueError("plot reference-context source hash mismatch")
-                    inputs["plot_context_" + record["paper_id"]] = flat_path
-                    labels = list(figure.get("latex_labels", []))
-                    if figure.get("latex_label"):
-                        labels.append(figure["latex_label"])
-                    flat_tex = flat_path.read_text()
-                    contexts = reference_contexts(flat_tex, labels)
-                    layouts[record["figure_id"]] = _figure_layout(figure, flat_tex)
-                    discussion = " ".join(c["window"] for c in contexts[:2])
-                discussions[record["figure_id"]] = " ".join(discussion.split()[:100])
-            if not any(
-                a["asset_id"] == provenance["asset_id"] and a.get("sha256") == provenance["asset_sha256"]
-                for a in figure["source_assets"]
-            ):
-                raise ValueError("digitized asset does not match classified source")
-            for series_index, series in enumerate(record["series"], 1):
-                reference = _plot_references(record, figure, series, series_index)
-                location = layouts.get(record["figure_id"], {}).get(provenance["asset_id"])
-                if location:
-                    reference["image"] = location + "; " + reference["image"]
-                axes = ("x", "y", "z") if series["geometry"] == "histogram_2d_cells" else ("x", "y")
-                values = {a: series[a] for a in axes}
-                if not values["x"] or len({len(v) for v in values.values()}) != 1:
-                    raise ValueError("empty or inconsistent plot coordinates")
-                if any(not math.isfinite(v) for vs in values.values() for v in vs):
-                    raise ValueError("nonfinite plot evidence")
-                numeric_axis = axes[-1]
-                peak = max(range(len(values[numeric_axis])), key=values[numeric_axis].__getitem__)
-                fmt = lambda v: format(v, ".7g")
-                header = [
-                    f"Digitized plot: {reference['figure']}, {reference['image']}; {reference['series']}.",
-                    f"Source file: {provenance['source_path']}. Caption: {figure.get('caption', '')}",
-                    f"Original caption: {figure.get('caption_raw') or figure.get('caption', '')}",
-                    f"Geometry: {series['geometry']}. Series appearance: {reference['series']}. Dataset association requires caption or legend evidence.",
-                    "Values estimate displayed geometry, not original measurements. Scientific validation pending; original bin edges and experimental errors are unverified.",
-                ]
-                axis_metadata = series_axis_metadata(record, series)
-                if discussions[record["figure_id"]]:
-                    header.append("Paper discussion of this figure: " + discussions[record["figure_id"]])
-                for axis, metadata in axis_metadata.items():
-                    header.append(
-                        f"{axis.upper()} scale: {metadata['scale']}; unit: {metadata['unit']}; unit status: {metadata['unit_status']}."
-                    )
-                header.append(
-                    "Coordinates are physical axis values; display multipliers are already applied. Log10 describes axis spacing, not the unit of the values."
-                )
-                summary = [
-                    "Numerical summary of extracted values: ranges and peak (maximum).",
-                    f"Displayed elements: {len(values['x'])}.",
-                ]
-                summary.extend(
-                    f"{axis.upper()} range: {fmt(min(vs))} to {fmt(max(vs))}." for axis, vs in values.items()
-                )
-                summary.append(
-                    "Maximum "
-                    + numeric_axis.upper()
-                    + " (first tied maximum): "
-                    + "; ".join(f"{a}={fmt(values[a][peak])}" for a in axes)
-                    + "."
-                )
-                tables = [
-                    "Extracted coordinates ("
-                    + ", ".join(axes)
-                    + "):\n"
-                    + "\n".join(
-                        ", ".join(fmt(values[a][i]) for a in axes)
-                        for i in range(start, min(start + 24, len(values["x"])))
-                    )
-                    for start in range(0, len(values["x"]), 24)
-                ]
-                group = overview_groups.setdefault(
-                    record["figure_id"],
-                    {
-                        "paper": by_paper[record["paper_id"]],
-                        "figure": figure,
-                        "reference": reference["figure"],
-                        "items": [],
-                    },
-                )
-                group["items"].append(
-                    {
-                        "text": f"{reference['image']}, {reference['series']} ({Path(provenance['source_path']).stem}): "
-                        + "; ".join(
-                            f"{a.upper()} {axis_metadata[a]['scale']} [{axis_metadata[a]['unit']}]"
-                            for a in axes
-                        )
-                        + ". Peak (first tied maximum): "
-                        + "; ".join(f"{a}={fmt(values[a][peak])}" for a in axes)
-                        + ".",
-                        "source": {
-                            "asset_id": provenance["asset_id"],
-                            "series_id": series["series_id"],
-                            "data_id": record["data_id"],
-                            "asset_sha256": provenance["asset_sha256"],
-                            "axis_metadata": axis_metadata,
-                            "digitized_data_sha256": manifest["summary"]["data_sha256"],
-                        },
-                    }
-                )
-                group["items"][-1]["retrieval_text"] = group["items"][-1]["text"].replace(location + "; ", "") if location else group["items"][-1]["text"]
-                for part, body in enumerate(["\n".join(summary), *tables]):
-                    text = "\n".join([*header, body])
-                    key = hashlib.sha256(
-                        f"{record['data_id']}:{series['series_id']}:{part}".encode()
-                    ).hexdigest()[:20]
-                    chunk = _chunk_record(
-                        by_paper[record["paper_id"]],
-                        "plot",
-                        len(chunks) + 1,
-                        {
-                            "section_id": record["figure_id"],
-                            "heading": f"{reference['figure']}, {reference['image']}, {reference['series']}: {'summary' if part == 0 else 'coordinates'}",
-                        },
-                        text,
-                    )
-                    chunk.update(
-                        chunk_id=f"{record['paper_id']}::plot::{key}",
-                        evidence_type="digitized_plot",
-                        cut_reason="plot_summary" if part == 0 else "plot_table",
-                        equation_ids=[],
-                        flags=["extracted_values_scientific_review_pending"],
-                        axis_metadata=axis_metadata,
-                        plot_reference=reference,
-                        retrieval_text=text.replace(location + "; ", "") if location else text,
-                        retrieval_section_heading=chunk["section_heading"].replace(location + "; ", "") if location else chunk["section_heading"],
-                        plot_provenance={
-                            "data_id": record["data_id"],
-                            "asset_id": provenance["asset_id"],
-                            "asset_sha256": provenance["asset_sha256"],
-                            "series_id": series["series_id"],
-                            "digitized_data_sha256": manifest["summary"]["data_sha256"],
-                        },
-                    )
-                    chunks.append(chunk)
-    for figure_id, group in (overview_groups.items() if include_overviews else []):
-        if len(group["items"]) < 2:
-            continue
-        for start in range(0, len(group["items"]), 6):
-            items = group["items"][start : start + 6]
-            content = (
-                f"{group['reference']} numerical overview. Caption: {group['figure'].get('caption', '')}\n"
-                f"Paper discussion: {discussions[figure_id]}\n"
-                "Values estimate displayed geometry. Scientific validation pending; original counts, bins and experimental uncertainties are unavailable.\n"
-                + "\n".join(item["text"] for item in items)
-            )
-            identity = hashlib.sha256(content.encode()).hexdigest()[:20]
-            retrieval_content = content
-            for item in items:
-                retrieval_content = retrieval_content.replace(item["text"], item["retrieval_text"])
-            chunk = _chunk_record(
-                group["paper"],
-                "plot",
-                len(chunks) + 1,
-                {"section_id": figure_id, "heading": group["reference"] + " numerical overview"},
-                content,
-            )
-            chunk.update(
-                chunk_id=f"{group['paper']['paper_id']}::plot::{identity}",
-                evidence_type="digitized_plot",
-                evidence_level="figure",
-                cut_reason="plot_overview",
-                equation_ids=[],
-                flags=["extracted_values_scientific_review_pending"],
-                plot_sources=[item["source"] for item in items],
-                plot_reference={"figure": group["reference"], "caption": group["figure"].get("caption", "")},
-                retrieval_text=retrieval_content,
-            )
-            chunks.append(chunk)
+    directory = Path(directory).resolve()
+    manifest = read_manifest(directory, "extract_plots")
+    data = directory / DATA_FILE
+    data_sha = manifest["summary"]["data_sha256"]
+    if manifest["params"].get("mode") != "digitize" or sha256_file(data) != data_sha:
+        raise ValueError("expected an intact digitization run")
+    source = manifest["inputs"]["classified_figures"]
+    classified = Path(source["path"])
+    if sha256_file(classified) != source["sha256"]:
+        raise ValueError("classified figure hash mismatch")
+    inputs: dict[str, Path] = {"digitization_manifest": directory / "manifest.json", "digitized_data": data,
+                               "plot_figures": classified}
+    figures = {f["figure_id"]: f for f in read_jsonl(classified)}
+    flat_sources = {key[: -len(":flat")]: (Path(entry["path"]), entry["sha256"])
+                    for key, entry in manifest.get("inputs", {}).items() if key.endswith(":flat")}
+    records: dict[str, tuple[dict, dict]] = {}
+    for record in read_jsonl(data):
+        if record.get("paper_id") not in by_paper:
+            raise ValueError("digitized paper is outside the parsed corpus")
+        if record["extraction_status"] == "success" and record.get("quality", {}).get("structural_validity") != "passed":
+            raise ValueError("successful plot record lacks structural checks")
+        figure = figures[record["figure_id"]]
+        provenance = record["provenance"]
+        if not any(a["asset_id"] == provenance["asset_id"] and a.get("sha256") == provenance["asset_sha256"]
+                   for a in figure["source_assets"]):
+            raise ValueError("digitized asset does not match classified source")
+        if provenance["asset_id"] in records:
+            raise ValueError(f"plot asset {provenance['asset_id']} recorded more than once")
+        records[provenance["asset_id"]] = (record, figure)
+
+    discussions: dict[str, str] = {}
+    layouts: dict[str, dict[str, str]] = {}
+    chunks = []
+    order = {p["paper_id"]: i for i, p in enumerate(papers)}
+    for asset_id, (record, figure) in sorted(
+        records.items(), key=lambda item: (order[item[1][0]["paper_id"]], item[1][0]["figure_id"], item[0])
+    ):
+        figure_id = record["figure_id"]
+        if figure_id not in discussions:
+            discussions[figure_id], layouts[figure_id] = "", {}
+            if record["paper_id"] in flat_sources:
+                flat_path, flat_sha = flat_sources[record["paper_id"]]
+                if sha256_file(flat_path) != flat_sha:
+                    raise ValueError("plot reference-context source hash mismatch")
+                inputs["plot_context_" + record["paper_id"]] = flat_path
+                flat_tex = flat_path.read_text()
+                labels = [*figure.get("latex_labels", []), *([figure["latex_label"]] if figure.get("latex_label") else [])]
+                window = " ".join(c["window"] for c in reference_contexts(flat_tex, labels)[:2])
+                discussions[figure_id] = " ".join(window.split()[:100])
+                layouts[figure_id] = _figure_layout(figure, flat_tex)
+        chunks.append(_plot_chunk(record, figure, by_paper[record["paper_id"]], discussions[figure_id],
+                                  layouts[figure_id], data_sha))
+    # Every panel of a multi-panel figure links all its panels, so a planner that
+    # retrieved one panel can use the one the question means (caption and layout tell which).
+    panels = defaultdict(list)
+    for chunk in chunks:
+        panels[chunk["plot_link"]["figure_id"]].append(chunk)
+    for group in panels.values():
+        if len(group) > 1:
+            summary = [{key: c["plot_link"][key] for key in ("image", "position", "asset_id", "extraction_status", "series")}
+                       for c in group]
+            for chunk in group:
+                chunk["plot_link"]["figure_panels"] = summary
     return chunks, inputs
+
+
+def _plot_chunk(record: dict, figure: dict, paper: dict, discussion: str,
+                layout: dict[str, str], data_sha: str) -> dict:
+    """The chunk of one plotted image; lines marked False are shown but not ranked on."""
+    from kamiknows.compute.sources.plots import record_entries
+
+    asset_id = record["provenance"]["asset_id"]
+    assets = figure["source_assets"]
+    number = next(i for i, a in enumerate(assets, 1) if a["asset_id"] == asset_id)
+    figure_name = _figure_name(record["figure_id"])
+    position = layout.get(asset_id)
+    image = f"image {number} of {len(assets)}" if len(assets) > 1 else "single image"
+    caption = figure.get("caption") or "Uncaptioned figure"
+    lines: list[tuple[str, bool]] = [(f"Plot: {figure_name} of arXiv:{paper['arxiv_id']}, {image}.", True)]
+    if position:
+        lines.append((f"Panel position: {position}.", False))
+        lines.append(("Figure layout (explicit source layout): " + "; ".join(
+            f"image {i}: {layout[a['asset_id']].split(' (')[0]}" for i, a in enumerate(assets, 1)
+            if a["asset_id"] in layout) + ".", False))
+    lines.append((f"Caption: {caption}", True))
+    if figure.get("caption_raw") and figure["caption_raw"] != caption:
+        lines.append((f"Original caption: {figure['caption_raw']}", True))
+    if discussion:
+        lines.append((f"Paper discussion of this figure: {discussion}", True))
+    raw_series = {s["series_id"]: s for s in record.get("series", [])}
+    entries = record_entries(record)
+    usable = [e for e in entries if e.series is not None]
+    labels = {e.handle: _series_label(record, raw_series[e.source["series_id"]], i)
+              for i, e in enumerate(entries, 1) if "series_id" in e.source}
+    if usable:
+        lines += [(text, True) for text in _data_lines(entries, raw_series, labels)]
+    else:
+        lines.append((f"Data status: {entries[0].reason}; numerical questions about this plot cannot be "
+                      "answered from extracted data.", True))
+    text = "\n".join(line for line, _ in lines)
+    heading = f"{figure_name}, {position.split(' (')[0] if position else image}"
+    chunk = _chunk_record(paper, "plot", number, {"section_id": record["figure_id"], "heading": heading}, text)
+    chunk.update(
+        chunk_id=f"{paper['paper_id']}::plot::{hashlib.sha256(asset_id.encode()).hexdigest()[:20]}",
+        evidence_type="plot",
+        cut_reason="plot",
+        equation_ids=[],
+        flags=["extracted_values_scientific_review_pending" if usable else "values_not_extracted"],
+        retrieval_text="\n".join(line for line, ranked in lines if ranked),
+        retrieval_section_heading=f"{figure_name}, {image}",
+        plot_link={
+            "asset_id": asset_id,
+            "figure_id": record["figure_id"],
+            "image": f"{number} of {len(assets)}",
+            "position": position.split(" (")[0] if position else None,
+            "data_id": record.get("data_id"),
+            "extraction_status": record["extraction_status"],
+            "digitized_data_sha256": data_sha,
+            "series": [{"handle": e.handle, "series_id": e.source["series_id"], "label": labels[e.handle],
+                        "usable": e.series is not None} for e in entries if "series_id" in e.source],
+        },
+    )
+    return chunk
+
+
+def _data_lines(entries: list, raw_series: dict[str, dict], labels: dict[str, str]) -> list[str]:
+    """Kind, axes and a few characteristic numbers of every series, computed with kamiknows.compute."""
+    from kamiknows.compute import argextremum, describe
+
+    fmt = lambda value: format(value, ".4g")
+    kinds = sorted({PLOT_KINDS.get(raw_series[e.source["series_id"]].get("geometry"), "plot") for e in entries})
+    lines = [f"Type: {', '.join(kinds)}; {len(entries)} series."]
+    axes_lines: list[str] = []
+    for entry in entries:
+        label = labels[entry.handle]
+        if entry.series is None:
+            lines.append(f"- {label}: values not usable ({entry.reason}).")
+            continue
+        series, info = entry.series, describe(entry.series)
+        axes = ", ".join(
+            f"{name.upper()}{' (colour)' if axis['role'] == 'value' and series.dim == 2 else ''} in "
+            f"{axis['unit'] if axis['unit'] != 'unknown' else 'an unestablished unit'} ({axis['scale']})"
+            for name, axis in info["axes"].items()
+        )
+        if f"Axes: {axes}." not in axes_lines:
+            axes_lines.append(f"Axes: {axes}.")
+        elements = "cells" if series.dim == 2 else "bins" if series.has_support else "points"
+        unit = lambda value: "" if str(value) in ("1", "unknown") else f" {value}"
+        ranges = "; ".join(
+            f"{name.upper()} from {fmt(axis['range'][0])} to {fmt(axis['range'][1])}{unit(axis['unit'])}"
+            for name, axis in info["axes"].items() if axis["role"] == "domain" and "range" in axis
+        )
+        peaks = argextremum(series)
+        where = ", ".join(f"{name.upper()} = {fmt(q.value)}{unit(q.unit)}" for name, q in peaks[0].coords.items())
+        tied = f" ({len(peaks)} tied {elements}, first shown)" if len(peaks) > 1 else ""
+        lines.append(f"- {label}: {series.size} {elements}; {ranges}; maximum "
+                     f"{fmt(peaks[0].value.value)}{unit(peaks[0].value.unit)} at {where}{tied}.")
+    return [lines[0], *axes_lines, *lines[1:], DISPLAYED_ONLY]
 
 
 def run_chunking(
@@ -838,16 +788,13 @@ def run_chunking(
     exclude_backmatter: bool,
     params: dict[str, Any],
     plots: bool = False,
-    digitized_dirs: list[Path] | None = None,
-    plot_overviews: bool = True,
+    digitized_dir: Path | None = None,
 ) -> dict[str, Any]:
     read_manifest(parsed_dir, "parse")
     papers = [p for p in read_jsonl(parsed_dir / "papers.jsonl") if p["status"] != "failed"]
     if not papers:
         raise ValueError(f"no parsed papers in {parsed_dir}")
-    plot_chunks, plot_inputs = digitized_chunks(
-        digitized_dirs or [], papers, include_overviews=plot_overviews
-    )
+    figure_chunks, plot_inputs = plot_chunks(digitized_dir, papers)
     output_dir = create_output_dir(output_dir)
     chunks: list[dict[str, Any]] = []
     equations: list[dict[str, Any]] = []
@@ -876,7 +823,7 @@ def run_chunking(
         chunks.extend(paper_chunks)
         print(f"{paper['arxiv_id']}: {len(paper_chunks)} chunks", flush=True)
 
-    chunks.extend(plot_chunks)
+    chunks.extend(figure_chunks)
     if len({c["chunk_id"] for c in chunks}) != len(chunks):
         raise RuntimeError("duplicate chunk ids")
     text_counts = Counter(" ".join(c["text"].lower().split()) for c in chunks)
@@ -905,7 +852,7 @@ def run_chunking(
     summary = {
         "papers": len(papers),
         "chunks": len(chunks),
-        "plot_chunks": len(plot_chunks),
+        "plot_chunks": len(figure_chunks),
         "chunks_per_paper": dict(Counter(c["paper_id"] for c in chunks)),
         "words": {"min": lengths[0], "max": lengths[-1], "mean": round(mean(lengths), 1)},
         "cut_reasons": dict(Counter(c["cut_reason"] for c in chunks)),
@@ -921,8 +868,7 @@ def run_chunking(
         params={
             "chunker": chunker_name,
             "exclude_backmatter": exclude_backmatter,
-            "digitized_dirs": digitized_dirs or [],
-            "plot_overviews": plot_overviews,
+            "digitized_dir": digitized_dir,
             **params,
         },
         inputs={"papers": parsed_dir / "papers.jsonl", **plot_inputs},

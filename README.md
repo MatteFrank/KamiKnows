@@ -44,7 +44,8 @@ models answer them.
 14. [Tests](#tests)
 15. [Models and licenses](#models-and-licenses)
 16. [Plot extraction](#plot-extraction)
-17. [Rebuild the slides](#rebuild-the-slides)
+17. [Compute](#compute)
+18. [Rebuild the slides](#rebuild-the-slides)
 
 ## Repository layout
 
@@ -58,10 +59,12 @@ kamiknows/            library, one module per step
   embeddings.py       sentence-transformers encoder (shared by chunking and retrieval)
   common.py           JSON I/O and run manifests (shared by all steps)
   plot_extractor/     plot extraction: inventory, classification, calibration, digitization
+  compute/            deterministic numeric operations on extracted data, plan executor
 scripts/              one command per step (thin wrappers around kamiknows/)
   parse.py  chunk.py  retrieve.py  generate.py  review.py
   chat.py             interactive terminal chat
   extract_plots.py    plot extraction modes (inventory, classify, calibrate, digitize, ...)
+  compute.py          runs the hand-written plans of a questions file on extracted data
   index_outputs.py    writes outputs/INDEX.md, the local list of runs
   run_ollama.slurm    runs any command on a GPU node with its own Ollama server
 tests/                offline tests (no network, no Ollama, no models)
@@ -123,7 +126,7 @@ from that point on.
 | Step | Command | Input | Main output |
 |---|---|---|---|
 | 1 | `scripts/parse.py` | arXiv id list | `papers.jsonl`, `papers/<id>/sections.json`, `equations.json` |
-| 2 | `scripts/chunk.py` | parse run + optional digitization runs | `chunks.jsonl`, `equations.jsonl` |
+| 2 | `scripts/chunk.py` | parse run + optional digitization run | `chunks.jsonl`, `equations.jsonl` |
 | 3 | `scripts/retrieve.py` | chunk run + questions | `contexts.jsonl` (top-k passages per question) |
 | 4 | `scripts/generate.py` | retrieve run | `answers.jsonl` |
 | 5 | `scripts/review.py` | one or more generate runs | `review.csv`, `review.html` |
@@ -131,7 +134,7 @@ from that point on.
 Plot extraction is optional and runs between parsing and chunking, as
 subcommands of one CLI, `scripts/extract_plots.py`:
 `inventory → classify → calibrate → digitize`. Its output joins step 2 through
-`--digitized-dirs`; without that option the pipeline is text-only. See
+`--digitized-dir`; without that option the pipeline is text-only. See
 [Plot extraction](#plot-extraction).
 
 Every run directory also contains `manifest.json` (see
@@ -184,11 +187,18 @@ Options shared by all chunkers: `--target-words` (default 400),
 `--overlap-words` (60), and `--exclude-backmatter`, which drops
 acknowledgment/bibliography sections (logged in `section_exclusions.jsonl`).
 
-**Plot chunks.** `--digitized-dirs <digitization run> [...]` adds the extracted
-plot values to any chunker: a summary per series, coordinate tables and one
-overview per figure, each with units, axis scales and provenance (see
-[the plot extraction guide](docs/plot_extractor/guide.md#5-ingest-into-the-chunks)).
-The text chunks are unchanged.
+**Plot chunks.** `--digitized-dir <digitization run>` adds one chunk per
+plotted image (a plot, or one panel of a multi-panel figure) to any chunker:
+one plot, one chunk, one digitized record. The chunk describes the plot so
+that retrieval can find it: caption, the paper sentences that cite it, panel
+position and figure layout, axes with units and scales, and per series a few
+characteristic numbers computed by `kamiknows.compute` (ranges, maximum, tied
+maxima). It never holds the extracted values. `plot_link` names the digitized
+record and the compute handle of each series, and for a multi-panel figure
+lists every panel (`figure_panels`), so a retrieved chunk leads to the data
+that `scripts/compute.py` and the solver work on. Plots that could not be
+digitized get a chunk too, saying why. Panel positions are shown but left out
+of the ranking text. The text chunks are unchanged.
 
 **How the semantic chunker decides.** Every sentence is embedded
 (`--embedding-model`, default `all-MiniLM-L6-v2`). At each sentence boundary
@@ -206,7 +216,8 @@ If no candidate fits, the chunk ends at the size limit or at the section end.
 
 Each chunk in `chunks.jsonl` has `chunk_id` (`<paper_id>::<chunker>::0001`),
 paper ids and title, `section_id`/`section_heading`, `text`, `words`,
-`cut_reason` (`semantic_drop`, `length_limit` or `section_end`),
+`cut_reason` (`semantic_drop`, `length_limit` or `section_end`; `plot` for plot
+chunks),
 `equation_ids` (equations of its section, detailed in `equations.jsonl`),
 `sentence_span` for sentence-based chunkers, and `flags`
 (`oversize_sentence`, `below_min_words`, `above_max_words`,
@@ -238,16 +249,25 @@ Dense retrieval needs the MiniLM model in the local cache (see [Setup](#setup)).
 | `--embedding-model` | `all-MiniLM-L6-v2` (default) or `e5-small-v2` (dense only) |
 | `--source-policy` | `explicit_arxiv` (default): when a question names arXiv ids, only chunks of those papers are ranked and the best chunk of each named paper is always kept; a named paper missing from the corpus gives no passages. `none`: always the whole corpus |
 | `--top-k` | passages per question (default 5) |
+| `--max-plots-per-figure` | at most this many plot chunks of one figure among the passages (default 1) |
 
 `contexts.jsonl` holds, per question, the passages, the source-constraint
 status and the evaluation (`hit`, `hit_rank`, `reciprocal_rank`). The
 manifest summary reports hit@k, MRR and the missed questions.
 
-Plot chunks are ranked together with paper passages; when a panel is retrieved,
-its figure overview is attached once. `contexts.jsonl` keeps `plot_provenance`
-and `axis_metadata`. With `expected_plot_sources` annotations, the summary also
-reports whether the required plot series was retrieved: finding the right paper
-is not enough.
+Plot chunks are ranked together with paper passages; `contexts.jsonl` keeps
+their `plot_link`. With `expected_plot_sources` annotations, the summary also
+reports whether the required plot series was retrieved, directly or through
+the `figure_panels` of a retrieved panel of the same figure: finding the right
+paper is not enough.
+
+The panels of a multi-panel figure share caption and discussion, so their
+plot chunks score almost alike and can fill every slot, pushing out the figure
+a question is about. `--max-plots-per-figure 1` (the default) keeps only the
+best-ranked plot chunk of each figure; the others stay reachable through its
+`figure_panels`. On the fastcalo plot questions, with a plot chunk for every
+image, this raises the questions whose required series is retrieved from 15 to
+19 of 20.
 
 ## Step 4: generate
 
@@ -255,11 +275,31 @@ Sends each question with its saved passages to an Ollama model and asks for
 JSON: `answer_status` (`answered` or `insufficient_evidence`), `answer`,
 `evidence`, `citations` (`["C1", ...]`), `confidence`, `limitations`.
 Retrieval is not re-run: the model sees exactly the passages of step 3.
+The prompt gives the instructions and the question, then the passages, then
+the question again: with long passages, a question stated only at the top was
+often ignored.
 
-Plot values reach the model as ordinary text passages, so no multimodal model
-is needed. The prompt tells the model that they are estimates of what the
-figure displays, and that original counts, bin edges and uncertainties cannot
-be inferred from them.
+Plot chunks reach the model as ordinary text passages, so no multimodal model
+is needed. They describe the plot and give a few characteristic numbers
+(ranges, maxima), not the extracted values: a 4B or 7B model cannot look
+values up reliably in long tables. Numbers beyond the card come from the
+solver.
+
+**Solver (`--solver`).** For a question whose passages include plot chunks,
+the model first acts as a planner. It sees the plot passages with the compute
+handle of each series (and of every panel of the same figure), the axis names
+and units, and the catalogue of operations of `kamiknows/compute/registry.py`,
+and writes a JSON plan (see [Compute](#compute)), or declines when the plot
+cannot give the number (original counts, bin edges, uncertainties). The plan
+runs on the digitized data linked to the retrieved chunks, never on other
+plots. A plan that is malformed or that an operation refuses goes back to the
+planner with the exact error (with the operation signature), up to 3 plans;
+a correction must be a plan, not a refusal. The results join the passages as
+one more labelled passage of type `computed`, with the expression that
+produced each number written with readable series names; the model then
+writes the answer and cites it. The digitized data is found through the
+manifests (retrieval run, then chunk run, then its `--digitized-dir`), and
+the hashes in `plot_link` must match.
 
 ```bash
 python scripts/generate.py \
@@ -274,15 +314,23 @@ python scripts/generate.py \
 | `--prompt` | `grounded` (default): answer only if supported, otherwise abstain; `synthesis`: may combine passages and give clearly marked partial answers |
 | `--question-ids` | answer only these questions (e.g. re-ask some questions with another prompt) |
 | `--num-predict` | max answer tokens (default 1024; 512 truncated some answers) |
+| `--num-ctx` | model context in tokens (default 32768), fixed so long contexts are never cut by a server default |
+| `--solver` | plan and compute plot numbers with `kamiknows.compute` before answering (needs a retrieval over chunks built with `--digitized-dir`) |
 | `--temperature`, `--top-p`, `--timeout-seconds`, `--base-url` | generation and server settings |
 
 Answers are written one by one, so an interrupted job keeps what it finished.
 Each answer carries a **citation check**: `valid`, `invented_citation`
 (a label that is not among the passages) or `answered_without_citation`;
-plus warnings such as `json_parse_error` or `truncated_at_token_limit`, and
+plus warnings such as `json_parse_error`, `truncated_at_token_limit` or
+`prompt_truncated_at_context_limit` (the prompt is longer than `--num-ctx` and
+Ollama evaluated too few of its tokens), and
 the generation token counts. A failed request is recorded as
 `backend_error` and the run continues. The manifest summary counts answer
-statuses, also split by the expected behaviour of the question.
+statuses, also split by the expected behaviour of the question. With
+`--solver`, each answer also carries `solver` (status, every plan attempt
+with its outcome) and `computed_passage`, and the summary counts
+`solver_status` (`computed`, `declined`, `not_computable`, `invalid_plan`,
+`no_computation`, `not_applicable`) and `solver_plan_attempts`.
 
 ## Step 5: review
 
@@ -312,22 +360,32 @@ prints the label counts per run and any value outside the allowed labels.
 
 Asks questions from the terminal against a chunk run. Each question is
 independent (no conversation memory); every turn is saved in
-`outputs/chat/<session>/turns.jsonl`.
+`outputs/chat/<session>/turns.jsonl`. The chat needs an Ollama server on a GPU
+node. Run the two blocks separately.
+
+On the login node, open an interactive GPU session and wait for its prompt:
 
 ```bash
+srun --account=kamiknows --qos=kamiknows --partition=bare-metal-GPU --gres=gpu:1 --pty bash
+```
+
+Then, inside the GPU session (`hostname` must show a GPU node, not the login node):
+
+```bash
+conda activate kamiknows
+export OLLAMA_MODELS=/storage-hpc/kamiknows/models/ollama OLLAMA_HOST=127.0.0.1:11434
+/storage-hpc/kamiknows/software/ollama/bin/ollama serve > /tmp/ollama-$USER.log 2>&1 &
+until curl -sf http://127.0.0.1:11434/api/tags > /dev/null; do sleep 2; done
 python scripts/chat.py --dataset-dir outputs/chunks_fastcalo_semantic_fd100_nobm \
   --retriever dense --model qwen3:4b-instruct --base-url http://127.0.0.1:11434
 ```
 
-
-The chat needs a running Ollama server. On the cluster, open an interactive
-GPU session and start the shared server first:
-
-```bash
-srun --account=kamiknows --qos=kamiknows --partition=bare-metal-GPU --gres=gpu:1 --pty bash
-export OLLAMA_MODELS=/storage-hpc/kamiknows/models/ollama OLLAMA_HOST=127.0.0.1:11434
-/storage-hpc/kamiknows/software/ollama/bin/ollama serve > /dev/null 2>&1 &
-```
+Type `exit` when done: the session keeps its GPU until you leave it. Open
+`srun` from a fresh login shell; inside an existing allocation it tries to add
+a step to that job instead of starting a new session. If port 11434 is taken,
+use another one in both `OLLAMA_HOST` and `--base-url`. The chat prints the
+first 240 characters of each passage; `--show-passages` prints them in full
+(the model always receives the full text).
 
 ## Running on SLURM
 
@@ -387,18 +445,20 @@ figures_<corpus>_inventory[_<variant>]
 figures_<corpus>_classified_<classifier>[_<variant>]
 calibrations_<corpus>_<variant>
 plots_<corpus>_<variant>
+compute_<evalset>_<plans>[_<variant>]
 ```
 
 | Field | Values |
 |---|---|
 | corpus | `fastcalo` |
-| chunker | `word`, `sentence`, `semantic`; suffixes: `nobm` = `--exclude-backmatter`, `fd100` = `--cut-policy first_drop --min-words 100` |
+| chunker | `word`, `sentence`, `semantic`; suffixes: `nobm` = `--exclude-backmatter`, `fd100` = `--cut-policy first_drop --min-words 100`, `plotcards` = `--digitized-dir` |
 | retriever | `tfidf`, `dense` (add the model if not MiniLM, e.g. `dense-e5`) |
 | sources | `explicit` = `--source-policy explicit_arxiv`, `allsrc` = `none` |
 | model | `qwen06b`, `qwen4b`, `mistral7b`, ... |
-| evalset | short tag of the questions file: `paired` = `fastcalo_paired.jsonl`, `plots` = `fastcalo_plots.jsonl` |
+| evalset | short tag of the questions file: `paired` = `fastcalo_paired.jsonl`, `plots` = `fastcalo_plots.jsonl`, `plotvalues` = `fastcalo_plots_values.jsonl`, `plotplans` = `fastcalo_plots_values_plans.jsonl` |
+| plans | where the executed plans come from: `expected` = the `expected_plan` annotations |
 | classifier | `vision` (Gemma) or `text` |
-| variant | the one thing that differs from the baseline, e.g. `synthesis`, `np512` |
+| variant | the one thing that differs from the baseline, e.g. `synthesis`, `np512`; `full_auto` = automatic calibration or digitization of every image of the corpus (no figure filter), `fullauto` = chunks or runs built on that digitization, `onefig` = `--max-plots-per-figure 1` (named so while it was not yet the default) |
 
 Retries append `_retry<N>`.
 
@@ -446,6 +506,7 @@ Fields (only `question_id` and `question` are required):
 | `required_answer_points` | list of points a correct answer must contain, shown to the reviewer |
 | `reference_evidence` | source passages (or figure assets and series) supporting the reference answer |
 | `expected_plot_sources` | plot asset/series pairs that retrieval must find, scored separately from papers |
+| `expected_plan`, `expected_results` | a hand-written compute plan and the results it must give (see [Compute](#compute)) |
 | `pair_id`, `source_variant`, `question_style`, `question_type` | grouping for analysis and review |
 
 These fields are used for evaluation and review only: they never reach the
@@ -460,6 +521,13 @@ values: each question appears once citing the figure (`figure_reference`) and
 once as a natural question with no figure or arXiv id (`natural`). 10 are
 answerable from the extracted values; 2 ask for original event counts and
 should be refused.
+
+`data/questions/fastcalo_plots_values.jsonl` (run tag `plotvalues`) adds 4 pairs
+asking for values other than peaks: a given bin, the first bin where one
+histogram overtakes the other, a local maximum in a range, a given heatmap
+cell. `data/questions/fastcalo_plots_values_plans.jsonl` (run tag `plotplans`)
+holds the same 20 questions with an `expected_plan` and `expected_results`
+each, taken from the reference answers.
 
 | `question_type` | File | Count | Example topic |
 |---|---|---:|---|
@@ -509,24 +577,24 @@ numerical evidence. Retrieval, generation and review do not change.
 | `recover`, `benchmark` | optional: original data (PGFPlots, HEPData) and comparison with reference values | |
 
 ```bash
-P=outputs/parsed_fastcalo
-I=outputs/figures_fastcalo_inventory_v1
-V=outputs/figures_fastcalo_classified_vision_v1
-A=outputs/calibrations_fastcalo_auto_v1
-D=outputs/plots_fastcalo_auto_v1
+PARSED=outputs/parsed_fastcalo
+INVENTORY=outputs/figures_fastcalo_inventory_v1
+CLASSIFIED=outputs/figures_fastcalo_classified_vision_v1
+CALIBRATED=outputs/calibrations_fastcalo_auto_v1
+DIGITIZED=outputs/plots_fastcalo_auto_v1
 
-python scripts/extract_plots.py inventory --parsed-dir $P --output-dir $I
+python scripts/extract_plots.py inventory --parsed-dir $PARSED --output-dir $INVENTORY
 sbatch scripts/run_ollama.slurm scripts/extract_plots.py classify \
-  --classifier vision --model gemma3:4b --inventory-dir $I --parsed-dir $P --output-dir $V
+  --classifier vision --model gemma3:4b --inventory-dir $INVENTORY --parsed-dir $PARSED --output-dir $CLASSIFIED
 # when the classification job has finished:
 python scripts/extract_plots.py calibrate \
-  --classified-dir $V --inventory-dir $I --parsed-dir $P --output-dir $A
-python scripts/extract_plots.py digitize --classified-dir $V --inventory-dir $I --parsed-dir $P \
-  --calibration-file $A/calibration_proposals.json --output-dir $D
-python scripts/extract_plots.py digitization-review --digitized-dir $D \
+  --classified-dir $CLASSIFIED --inventory-dir $INVENTORY --parsed-dir $PARSED --output-dir $CALIBRATED
+python scripts/extract_plots.py digitize --classified-dir $CLASSIFIED --inventory-dir $INVENTORY --parsed-dir $PARSED \
+  --calibration-file $CALIBRATED/calibration_proposals.json --output-dir $DIGITIZED
+python scripts/extract_plots.py digitization-review --digitized-dir $DIGITIZED \
   --output-dir outputs/plots_fastcalo_visual_v1
-python scripts/chunk.py sentence --parsed-dir $P --exclude-backmatter \
-  --digitized-dirs $D --output-dir outputs/chunks_fastcalo_sentence_plots_v1
+python scripts/chunk.py sentence --parsed-dir $PARSED --exclude-backmatter \
+  --digitized-dir $DIGITIZED --output-dir outputs/chunks_fastcalo_sentence_plots_v1
 ```
 
 Then run steps 3-5 on the new chunk directory, for example with
@@ -537,12 +605,66 @@ the other modes run on CPU. All dependencies, including the OCR engine, are in
 Extracted values are estimates of what the figure displays. Calibration and
 digitization report a reason instead of guessing when axes are ambiguous or a
 layout is unsupported; original bins, counts and uncertainties are never
-inferred. So far digitization has been run on the hybrid 2D maps and on one 1D
-figure of the corpus, not yet on every calibrated file.
+inferred. On the fastcalo corpus one automatic calibration and one digitization
+of all 224 images give 119 digitized images (322 series: 2D maps, step
+histograms and curves); the other 105 report why they were not digitized.
+Manual review of the digitized values is pending.
 
 - [Plot extraction guide](docs/plot_extractor/guide.md): how each step works, outputs, limits, code.
 - [Slides](docs/plot_extractor/KamiKnows_plot_extraction.pdf): the same chain step by step, with examples.
 - [Plot QA results](docs/plot_extractor/qa_results.md): the plot questions and how Qwen and Mistral answer them.
+
+## Compute
+
+`kamiknows/compute/` turns extracted data into numbers with deterministic
+operations, so that a language model never has to read raw values. Every
+source becomes a `Series`: a discrete function from a 1D or 2D domain to one
+value axis, with units and scales (a curve, a histogram, the cells of a
+heatmap). Digitized plots are read by `compute/sources/plots.py`, the only
+module that knows the digitization schema.
+
+The primitives take and return series, points and quantities, so any
+composition of them is again an operation:
+
+| Family | Operations |
+|---|---|
+| selection | `restrict`, `section`, `coordinate` |
+| evaluation | `evaluate`, `solve` |
+| algebra | `combine`, `transform`, `component` |
+| reduction | `reduce`, `project`, `argextremum` |
+| calculus | `differentiate`, `cumulate` |
+
+`derived.py` writes common quantities (`crossing`, `normalize`, `mean`, `std`,
+`quantile`, `fwhm`, `linear_fit`, `distance`) only as compositions of the
+primitives. Units propagate and are checked; anything the data cannot give
+(a point outside the plot, an undigitized figure, incompatible units) raises
+`NotComputable` with the reason instead of an approximation. Every number
+carries the expression that produced it, e.g. `div(max(A), max(B))`.
+
+A plan is a JSON list of steps over the operations in `registry.py`; later
+steps refer to earlier ones (`$a`, `$a[0].x`):
+
+```json
+{"steps": [{"id": "blue", "op": "reduce", "args": {"series": "<asset_id>/path_2", "how": "max"}},
+           {"id": "red", "op": "reduce", "args": {"series": "<asset_id>/path_3", "how": "max"}},
+           {"id": "ratio", "op": "combine", "args": {"left": "$blue", "right": "$red", "op": "div"}}],
+ "result": ["$ratio"]}
+```
+
+`scripts/compute.py` runs the `expected_plan` of every question and compares
+the results with `expected_results` within `--rel-tol` (default 1%). No
+language model runs, so this checks the operations and the extracted data
+alone:
+
+```bash
+python scripts/compute.py --questions data/questions/fastcalo_plots_values_plans.jsonl \
+  --digitized-dir $DIGITIZED --output-dir outputs/compute_plotplans_expected
+```
+
+Output: `results.jsonl` (per question: plan, outcome, expected results,
+differences) and the manifest. An outcome is `computed`, `declined` (the plan
+says the data cannot answer), `not_computable` (an operation refused, with the
+reason) or `invalid_plan` (a malformed plan).
 
 ## Rebuild the slides
 

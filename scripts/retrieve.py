@@ -30,12 +30,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--top-k", type=int, default=5, help="passages per question (default: 5)")
     parser.add_argument("--source-policy", choices=["none", "explicit_arxiv"], default="explicit_arxiv",
                         help="explicit_arxiv: restrict to the arXiv ids written in the question (default)")
+    parser.add_argument("--max-plots-per-figure", type=int, default=1,
+                        help="at most this many plot chunks of one figure among the passages (default: 1, "
+                             "one panel per multi-panel figure; every plot chunk lists all panels of its figure)")
     args = parser.parse_args(argv)
     try:
         summary = run_retrieval(dataset_dir=args.dataset_dir, questions_file=args.questions,
                                 output_dir=args.output_dir, retriever=args.retriever,
                                 embedding_model=args.embedding_model, device=args.device,
-                                top_k=args.top_k, source_policy=args.source_policy)
+                                top_k=args.top_k, source_policy=args.source_policy,
+                                max_plots_per_figure=args.max_plots_per_figure)
     except (OSError, ValueError, RuntimeError, ImportError) as exc:
         print(f"retrieve failed: {exc}", file=sys.stderr)
         return 1

@@ -51,6 +51,28 @@ def test_explicit_sources_keep_one_chunk_per_named_paper():
     assert passages == [] and constraint["status"] == "requested_source_unavailable"
 
 
+def test_one_panel_per_figure_leaves_room_for_other_evidence():
+    def panel(chunk_id, figure_id):
+        return {**chunk(chunk_id, "1111.00001v1", "jet momentum distribution panel"),
+                "plot_link": {"figure_id": figure_id}}
+
+    chunks = [panel("f12a", "f12"), panel("f12b", "f12"), panel("f12c", "f12"),
+              panel("f1", "f1"), chunk("t1", "1111.00001v1", "jet momentum")]
+    scores = {"f12a": 0.9, "f12b": 0.89, "f12c": 0.88, "f1": 0.7, "t1": 0.5}
+
+    class Index:
+        def scores(self, query):
+            return [scores[c["chunk_id"]] for c in chunks]
+
+    def ranked(**options):
+        passages, _ = retrieval.retrieve(Index(), chunks, "jet momentum", top_k=3, source_policy="none", **options)
+        return [p["chunk_id"] for p in passages]
+
+    assert ranked() == ranked(max_plots_per_figure=1) == ["f12a", "f1", "t1"]
+    assert ranked(max_plots_per_figure=None) == ["f12a", "f12b", "f12c"]
+    assert ranked(max_plots_per_figure=2) == ["f12a", "f12b", "f1"]
+
+
 def test_evaluate_any_and_all_expected_sources():
     passages = [{"rank": 1, "arxiv_id": "2222.00002v1"}, {"rank": 2, "arxiv_id": "1111.00001v1"}]
     any_hit = retrieval.evaluate(passages, {"expected_arxiv_ids": ["1111.00001v1", "9.9"]})
@@ -102,12 +124,14 @@ def test_run_retrieval(parsed_dir, questions_file, tmp_path):
         )
 
 
-def test_figure_overview_sources_are_evaluated_without_ranking_annotations(tmp_path):
+def test_plot_evidence_is_scored_from_the_linked_series_without_ranking_annotations(tmp_path):
     from kamiknows.common import write_jsonl, write_manifest
 
     dataset = tmp_path / "dataset"
-    record = chunk("overview", "1111.00001v1", "calorimeter peak energy")
-    record.update(evidence_type="digitized_plot", plot_sources=[{"asset_id": "asset", "series_id": "blue"}])
+    record = chunk("plot", "1111.00001v1", "calorimeter peak energy")
+    link = {"asset_id": "asset", "figure_id": "fig", "series": [{"handle": "asset/blue", "series_id": "blue", "label": "blue curve",
+                                             "usable": True}]}
+    record.update(evidence_type="plot", plot_link=link)
     write_jsonl(dataset / "chunks.jsonl", [record])
     write_manifest(dataset, step="chunk", params={"chunker": "sentence"}, inputs={}, summary={})
     questions = tmp_path / "questions.jsonl"
@@ -137,38 +161,9 @@ def test_figure_overview_sources_are_evaluated_without_ranking_annotations(tmp_p
     questions = tmp_path / "questions_missing.jsonl"
     write_jsonl(questions, [question])
     assert run("missing")["plot_evidence"]["all_expected_retrieved"] == 0
-    assert (
-        read_jsonl(tmp_path / "found" / "contexts.jsonl")[0]["passages"]
-        == read_jsonl(tmp_path / "missing" / "contexts.jsonl")[0]["passages"]
-    )
-
-
-def test_matching_panel_attaches_only_its_own_figure_context():
-    panel = chunk("panel", "1111.00001v1", "brightest calorimeter cell")
-    panel.update(plot_provenance={"asset_id": "panel-a", "series_id": "cells"})
-    overview = chunk("figure-context", "1111.00001v1", "all sibling numerical summaries")
-    overview.update(
-        evidence_level="figure",
-        plot_sources=[
-            {"asset_id": "panel-a", "series_id": "cells"},
-            {"asset_id": "panel-b", "series_id": "cells"},
-        ],
-    )
-    unrelated = chunk("other-context", "2222.00002v1", "unrelated numerical summaries")
-    unrelated.update(evidence_level="figure", plot_sources=[{"asset_id": "panel-a", "series_id": "cells"}])
-
-    class Ranked:
-        def scores(self, question):
-            return [1.0, 0.1, 0.05]
-
-    passages, _ = retrieval.retrieve(
-        Ranked(), [panel, overview, unrelated], "brightest cell", top_k=1, source_policy="none"
-    )
-    assert len(passages) == 1
-    assert passages[0]["figure_context_chunk_id"] == "figure-context"
-    assert passages[0]["plot_sources"][1]["asset_id"] == "panel-b"
-    assert "unrelated" not in passages[0]["text"]
-    assert "Related numerical context" in passages[0]["text"]
+    passages = read_jsonl(tmp_path / "found" / "contexts.jsonl")[0]["passages"]
+    assert passages == read_jsonl(tmp_path / "missing" / "contexts.jsonl")[0]["passages"]
+    assert passages[0]["plot_link"] == link and passages[0]["evidence_type"] == "plot"
 
 
 def test_ranking_can_ignore_presentation_labels_without_removing_them_from_evidence():
@@ -185,3 +180,27 @@ def test_ranking_can_ignore_presentation_labels_without_removing_them_from_evide
     assert enc.texts[0] == enc.texts[1]
     passages, _ = retrieval.retrieve(retrieval.TfidfIndex([a]), [a], 'jet momentum peak', top_k=1, source_policy='none')
     assert 'top-left' in passages[0]['text']
+
+
+def test_repository_form_of_arxiv_ids_is_a_source_request():
+    assert retrieval.extract_arxiv_ids("In the paper arXiv 1705_02355v2: what?") == ["1705.02355v2"]
+    assert retrieval.extract_arxiv_ids("figs/0_0.pdf and run 12345_678") == []
+
+
+def test_a_retrieved_panel_reaches_the_series_of_its_sibling_panels(tmp_path):
+    from kamiknows.common import write_jsonl, write_manifest
+
+    dataset = tmp_path / "dataset"
+    record = chunk("panel-b", "1111.00001v1", "average shower energy map")
+    sibling = {"asset_id": "panel-a", "series": [{"series_id": "cells"}]}
+    record.update(evidence_type="plot", plot_link={"asset_id": "panel-b", "figure_id": "fig", "series": [{"series_id": "cells"}],
+                                                   "figure_panels": [sibling]})
+    write_jsonl(dataset / "chunks.jsonl", [record])
+    write_manifest(dataset, step="chunk", params={"chunker": "sentence"}, inputs={}, summary={})
+    questions = tmp_path / "questions.jsonl"
+    write_jsonl(questions, [{"question_id": "q", "question": "Brightest cell of the average shower?",
+                             "expected_plot_sources": [{"asset_id": "panel-a", "series_id": "cells"}]}])
+    summary = retrieval.run_retrieval(dataset_dir=dataset, questions_file=questions, output_dir=tmp_path / "run",
+                                      retriever="tfidf", embedding_model="", device="cpu", top_k=1,
+                                      source_policy="none")
+    assert summary["plot_evidence"]["all_expected_retrieved"] == 1

@@ -31,10 +31,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="drop acknowledgment and bibliography sections before chunking",
     )
     common.add_argument(
-        "--digitized-dirs",
-        nargs="+",
+        "--digitized-dir",
         type=Path,
-        help="append provenance-linked summaries and coordinate tables from digitization runs",
+        help="digitization run of extract_plots.py: adds one chunk per plotted image, linked to its data",
     )
 
     parser = argparse.ArgumentParser(
@@ -120,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
             exclude_backmatter=args.exclude_backmatter,
             params=params,
             plots=getattr(args, "plots", False),
-            digitized_dirs=args.digitized_dirs,
+            digitized_dir=args.digitized_dir,
         )
     except (OSError, ValueError, RuntimeError, ImportError) as exc:
         print(f"chunk failed: {exc}", file=sys.stderr)

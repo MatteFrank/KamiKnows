@@ -35,6 +35,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--prompt", choices=sorted(PROMPTS), default="grounded",
                         help="grounded: strict abstention; synthesis: allows partial answers (default: grounded)")
     parser.add_argument("--num-predict", type=int, default=1024, help="maximum answer tokens (default: 1024)")
+    parser.add_argument("--num-ctx", type=int, default=32768,
+                        help="model context in tokens; fixed so prompts with plot tables are never truncated "
+                             "by a server default (default: 32768)")
     parser.add_argument("--timeout-seconds", type=int, default=300, help="per answer (default: 300)")
     parser.add_argument("--base-url", default="http://127.0.0.1:11434",
                         help="Ollama server (default: http://127.0.0.1:11434)")
@@ -52,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"chat failed: {exc}", file=sys.stderr)
         return 1
 
-    options = {"temperature": 0.0, "top_p": 0.9, "num_predict": args.num_predict}
+    options = {"temperature": 0.0, "top_p": 0.9, "num_predict": args.num_predict, "num_ctx": args.num_ctx}
     turns = 0
     print("Type a question, or /exit. Answers are not scientifically validated.")
     with open_jsonl(session_dir / "turns.jsonl") as write:

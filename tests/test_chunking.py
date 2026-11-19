@@ -102,88 +102,93 @@ def test_run_chunking(parsed_dir, tmp_path):
         )
 
 
-def test_digitized_evidence_is_complete_and_keeps_provenance(tmp_path):
-    from kamiknows.common import write_jsonl, write_manifest, sha256_file
-    from kamiknows.retrieval import TfidfIndex, retrieve
+FIGURE_TEX = (
+    "\\begin{figure}\n\\includegraphics{curves}\\\\\n\\includegraphics{map}\n"
+    "\\caption{Jet momentum curves (top) and an energy map (bottom).}\\label{fig:jets}\n\\end{figure}\n\n"
+    "As Fig.~\\ref{fig:jets} shows, the weighted curve peaks at low momentum.\n"
+)
+ASSET_A, ASSET_B = "p::figure::0001::asset::01", "p::figure::0001::asset::02"
 
-    run = tmp_path / "digitized"
-    figure_file = tmp_path / "figures.jsonl"
-    write_jsonl(
-        figure_file,
-        [
-            {
-                "figure_id": "p::figure::0001",
-                "caption": "A test curve.",
-                "source_assets": [{"asset_id": "a", "sha256": "source_hash"}],
-            }
-        ],
-    )
-    record = {
-        "paper_id": "p",
-        "figure_id": "p::figure::0001",
-        "data_id": "d",
-        "extraction_status": "success",
-        "quality": {"structural_validity": "passed"},
-        "provenance": {"asset_id": "a", "asset_sha256": "source_hash", "source_path": "curve.pdf"},
-        "calibration": {"x": {"scale": "linear"}, "y": {"scale": "log10"}},
-        "series": [
-            {
-                "series_id": "s",
-                "geometry": "rendered_curve_samples",
-                "units": {"x": "GeV"},
-                "x": list(range(30)),
-                "y": [i + 1.0 for i in range(30)],
-            }
-        ],
-    }
+
+def _curve(series_id, colour, offset):
+    return {"series_id": series_id, "geometry": "rendered_curve_samples", "units": {"x": "GeV", "y": "A.U."},
+            "x": [float(i) for i in range(30)], "y": [i * 1.5 + offset for i in range(30)],
+            "raster_color_rgb": colour, "value_states": ["visible"] * 30}
+
+
+def _plot_record(asset, status="success", series=()):
+    return {"paper_id": "p", "figure_id": "p::figure::0001", "data_id": f"d-{asset[-2:]}",
+            "extraction_status": status, "quality": {"structural_validity": "passed"},
+            "provenance": {"asset_id": asset, "asset_sha256": f"hash-{asset[-2:]}", "source_path": "f.pdf"},
+            "calibration": {"x": {"scale": "linear"}, "y": {"scale": "log10"}}, "series": list(series)}
+
+
+def _digitization_run(tmp_path, name, records):
+    from kamiknows.common import sha256_file, write_jsonl, write_manifest
+
+    flat = tmp_path / f"{name}_flat.tex"
+    flat.write_text(FIGURE_TEX)
+    figures = tmp_path / f"{name}_figures.jsonl"
+    spans = [[FIGURE_TEX.index(n), FIGURE_TEX.index(n) + len(n)] for n in ("\\includegraphics{curves}", "\\includegraphics{map}")]
+    write_jsonl(figures, [{
+        "figure_id": "p::figure::0001", "caption": "Jet momentum curves (top) and an energy map (bottom).",
+        "latex_label": "fig:jets",
+        "source_assets": [{"asset_id": a, "sha256": f"hash-{a[-2:]}", "flat_span": s}
+                          for a, s in zip((ASSET_A, ASSET_B), spans)],
+    }])
+    run = tmp_path / name
     data = run / "digitized_data.jsonl"
-    write_jsonl(data, [record, {"extraction_status": "needs_calibration"}])
-    write_manifest(
-        run,
-        step="extract_plots",
-        params={"mode": "digitize"},
-        inputs={"classified_figures": figure_file},
-        summary={"data_sha256": sha256_file(data)},
-    )
-    chunks, inputs = chunking.digitized_chunks([run], [PAPER])
-    assert len(chunks) == 3
-    assert "x=29; y=30" in chunks[0]["text"]
-    assert "Y scale: log10" in chunks[0]["text"]
-    assert "29, 30" in chunks[-1]["text"]
-    assert "Scientific validation pending" in chunks[0]["text"]
-    assert chunks[0]["plot_provenance"]["asset_sha256"] == "source_hash"
-    passages, _ = retrieve(TfidfIndex(chunks), chunks, "What is the maximum?", top_k=1, source_policy="none")
-    assert passages[0]["evidence_type"] == "digitized_plot"
-    assert passages[0]["plot_provenance"]["data_id"] == "d"
-    assert "::" not in chunks[0]["text"]
-    assert chunks[0]["plot_reference"]["figure"] == "Figure 1"
-    from copy import deepcopy
+    write_jsonl(data, records)
+    write_manifest(run, step="extract_plots", params={"mode": "digitize"},
+                   inputs={"classified_figures": figures, "p:flat": flat}, summary={"data_sha256": sha256_file(data)})
+    return run
 
-    grouped = deepcopy(record)
-    grouped["series"].append({**deepcopy(record["series"][0]), "series_id": "second"})
-    second = tmp_path / "grouped"
-    second_data = second / "digitized_data.jsonl"
-    write_jsonl(second_data, [grouped])
-    write_manifest(
-        second,
-        step="extract_plots",
-        params={"mode": "digitize"},
-        inputs={"classified_figures": figure_file},
-        summary={"data_sha256": sha256_file(second_data)},
-    )
-    overview_chunks, _ = chunking.digitized_chunks([second], [PAPER])
-    overview = next(c for c in overview_chunks if c["cut_reason"] == "plot_overview")
-    assert {s["series_id"] for s in overview["plot_sources"]} == {"s", "second"}
-    assert all(s["axis_metadata"]["x"]["unit"] == "GeV" for s in overview["plot_sources"])
-    without, _ = chunking.digitized_chunks([second], [PAPER], include_overviews=False)
-    assert not any(c["cut_reason"] == "plot_overview" for c in without)
-    with pytest.raises(ValueError, match="duplicate plot asset"):
-        chunking.digitized_chunks([run, run], [PAPER])
+
+def test_plot_chunks_describe_each_image_and_link_its_data(tmp_path):
+    run = _digitization_run(tmp_path, "d", [
+        _plot_record(ASSET_A, series=[_curve("s", [0.1, 0.1, 0.9], 0.25), _curve("second", [0.9, 0.1, 0.1], 1.0)]),
+        _plot_record(ASSET_B, status="needs_calibration"),
+    ])
+    chunks, inputs = chunking.plot_chunks(run, [PAPER])
+    assert [c["cut_reason"] for c in chunks] == ["plot", "plot"]
+    curves, energy_map = chunks
+    text = curves["text"]
+    assert "Plot: Figure 1 of arXiv:1.1, image 1 of 2." in text
+    assert "Caption: Jet momentum curves" in text
+    assert "Paper discussion of this figure:" in text and "weighted curve peaks" in text
+    assert "Axes: X in GeV (linear), Y in A.U. (log10)." in text
+    assert "- blue curve: 30 points; X from 0 to 29 GeV; maximum 43.75 A.U. at X = 29 GeV." in text
+    assert "- red curve:" in text
+    assert "10.75" not in text and "::" not in text          # no extracted values, no storage ids
+    assert "Panel position: top panel" in text and "top panel" not in curves["retrieval_text"]
+    assert curves["plot_link"]["series"] == [
+        {"handle": f"{ASSET_A}/s", "series_id": "s", "label": "blue curve", "usable": True},
+        {"handle": f"{ASSET_A}/second", "series_id": "second", "label": "red curve", "usable": True},
+    ]
+    assert curves["plot_link"]["data_id"] == "d-01"
+    assert curves["plot_link"]["position"] == "top panel" and curves["plot_link"]["image"] == "1 of 2"
+    panels = curves["plot_link"]["figure_panels"]
+    assert [(p["asset_id"], p["position"], p["extraction_status"]) for p in panels] == [
+        (ASSET_A, "top panel", "success"), (ASSET_B, "bottom panel", "needs_calibration")]
+    assert energy_map["plot_link"]["figure_panels"] == panels
+    assert "Data status: plot not digitized (extraction status: needs_calibration)" in energy_map["text"]
+    assert energy_map["flags"] == ["values_not_extracted"] and energy_map["plot_link"]["series"] == []
+    assert inputs["plot_context_p"].name == "d_flat.tex"
+
+
+def test_plot_chunks_need_one_intact_record_per_image(tmp_path):
+    assert chunking.plot_chunks(None, [PAPER]) == ([], {})
+    twice = _digitization_run(tmp_path, "twice", [_plot_record(ASSET_A, status="needs_calibration"),
+                                                  _plot_record(ASSET_A, series=[_curve("s", None, 0)])])
+    with pytest.raises(ValueError, match="recorded more than once"):
+        chunking.plot_chunks(twice, [PAPER])
+    digitized = _digitization_run(tmp_path, "digitized", [_plot_record(ASSET_A, series=[_curve("s", None, 0)])])
     with pytest.raises(ValueError, match="outside the parsed corpus"):
-        chunking.digitized_chunks([run], [])
+        chunking.plot_chunks(digitized, [])
+    data = digitized / "digitized_data.jsonl"
     data.write_text(data.read_text() + "\n")
     with pytest.raises(ValueError, match="intact digitization"):
-        chunking.digitized_chunks([run], [PAPER])
+        chunking.plot_chunks(digitized, [PAPER])
 
 
 def test_axis_metadata_distinguishes_units_scales_and_missing_values():
