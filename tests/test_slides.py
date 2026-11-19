@@ -17,7 +17,7 @@ def load_builder():
 
 @pytest.mark.parametrize("deck,pages,command", [
     ("overview", 16, "extract_plots.py calibrate"),
-    ("plot_extraction", 18, "extract_plots.py calibrate"),
+    ("plot_extraction", 19, "extract_plots.py calibrate"),
     ("compute", 18, "scripts/compute.py"),
 ])
 def test_slide_decks_build_and_never_name_local_runs(tmp_path, deck, pages, command):

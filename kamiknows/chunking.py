@@ -578,19 +578,39 @@ def _series_label(record: dict, series: dict, index: int) -> str:
     """Name a series by its legend label, else by its observed colour; legends are never guessed."""
     if series.get("label"):
         return series["label"]
-    colour = series.get("raster_color_rgb")
+    colour, kind = series.get("raster_color_rgb"), "curve"
     if colour is None:
         spec = next((s for s in record.get("calibration", {}).get("series", [])
                      if s.get("series_id") == series["series_id"]), {})
         indices = spec.get("path_indices", [])
         paths = record.get("raw_source", {}).get("paths", [])
         if indices and indices[0] < len(paths):
-            colour = paths[indices[0]].get("color")
-    if isinstance(colour, (list, tuple)) and len(colour) == 3:
-        dominant = sorted(zip(colour, ("red", "green", "blue")), reverse=True)
-        if dominant[0][0] > 0.25 and dominant[0][0] > 1.8 * max(dominant[1][0], 0.05):
-            return dominant[0][1] + " curve"
+            # A filled shape carries its colour in "fill"; a stroked one in "color".
+            path = paths[indices[0]]
+            colour = path.get("color") or path.get("fill")
+            kind = "curve" if path.get("color") else "filled area"
+    name = _colour_name(colour)
+    if name:
+        return f"{name} {kind}"
     return "heatmap cells" if series.get("geometry") == "histogram_2d_cells" else f"series {index}"
+
+
+HUES = [(15, "red"), (45, "orange"), (70, "yellow"), (170, "green"), (200, "cyan"), (260, "blue"),
+        (300, "purple"), (345, "magenta"), (360, "red")]
+
+
+def _colour_name(colour: Any) -> str | None:
+    """Basic colour name from the hue, so that legends and captions can be matched by colour."""
+    import colorsys
+
+    if not (isinstance(colour, (list, tuple)) and len(colour) == 3):
+        return None
+    hue, saturation, value = colorsys.rgb_to_hsv(*colour)
+    if value < 0.15:
+        return "black"
+    if saturation < 0.2:
+        return "grey"
+    return next(name for limit, name in HUES if hue * 360 < limit)
 
 
 PLOT_KINDS = {
@@ -713,6 +733,9 @@ def _plot_chunk(record: dict, figure: dict, paper: dict, discussion: str,
     usable = [e for e in entries if e.series is not None]
     labels = {e.handle: _series_label(record, raw_series[e.source["series_id"]], i)
               for i, e in enumerate(entries, 1) if "series_id" in e.source}
+    repeated = Counter(labels.values())
+    labels = {handle: f"{label} {i}" if repeated[label] > 1 else label
+              for i, (handle, label) in enumerate(labels.items(), 1)}
     if usable:
         lines += [(text, True) for text in _data_lines(entries, raw_series, labels)]
     else:
@@ -774,8 +797,10 @@ def _data_lines(entries: list, raw_series: dict[str, dict], labels: dict[str, st
         peaks = argextremum(series)
         where = ", ".join(f"{name.upper()} = {fmt(q.value)}{unit(q.unit)}" for name, q in peaks[0].coords.items())
         tied = f" ({len(peaks)} tied {elements}, first shown)" if len(peaks) > 1 else ""
+        below = len(raw_series[entry.source["series_id"]].get("below_range_intervals") or [])
+        hidden = f"; {below} more bins drawn below the plotted range (values not displayed)" if below else ""
         lines.append(f"- {label}: {series.size} {elements}; {ranges}; maximum "
-                     f"{fmt(peaks[0].value.value)}{unit(peaks[0].value.unit)} at {where}{tied}.")
+                     f"{fmt(peaks[0].value.value)}{unit(peaks[0].value.unit)} at {where}{tied}{hidden}.")
     return [lines[0], *axes_lines, *lines[1:], DISPLAYED_ONLY]
 
 

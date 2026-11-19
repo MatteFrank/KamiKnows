@@ -221,6 +221,62 @@ def _polyline(path: dict) -> tuple[list, bool]:
     return points, sampled
 
 
+def _filled_outline(segments: list, max_drift: float) -> list:
+    """Keep the way out of a filled histogram outline; the way back must be its horizontal baseline.
+
+    A filled step histogram is drawn as one polygon that runs along the steps with x increasing and
+    returns along a baseline. A returning edge at varying height (a band, an arbitrary shape) is refused.
+    """
+    turn = next((i for i, (a, b) in enumerate(segments) if b[0] - a[0] < -1e-5), len(segments))
+    outbound, back = segments[:turn], segments[turn:]
+    tolerance = max(1e-5, max_drift)
+    if any(b[0] - a[0] > 1e-5 for a, b in back):
+        raise ExtractionError("unsupported", "filled outline is not one step profile closed by a baseline")
+    levels = [y for a, b in back if abs(b[0] - a[0]) > 1e-5 for y in (a[1], b[1])]
+    steps = [y for a, b in outbound if b[0] - a[0] > 1e-5 for y in (a[1], b[1])]
+    if levels and (max(levels) - min(levels) > tolerance or (steps and min(levels) < max(steps) - tolerance)):
+        raise ExtractionError("unsupported", "filled outline returns at varying height: not a histogram fill")
+    return outbound
+
+
+def step_profile(path: dict, calibration: Calibration, max_drift: float) -> tuple[list, list]:
+    """Displayed steps of a step-histogram path, stroked or filled.
+
+    Plotting libraries break a stroked histogram into separate pieces where bins drop below the axis
+    range, and close a filled one along a baseline outside the frame. Every piece must be axis-aligned
+    and monotone in x, and later pieces may not go back in x. Steps drawn wholly below the frame are
+    not displayed: their intervals are returned, never a value. A step above the frame or across its
+    sides is refused.
+    """
+    if not path["items"] or any(item[0] != "l" for item in path["items"]):
+        raise ExtractionError("unsupported", "step histogram requires straight segments only")
+    segments = [(list(item[1]), list(item[2])) for item in path["items"]]
+    if path.get("fill") is not None:
+        segments = _filled_outline(segments, max_drift)
+    reached = -math.inf
+    for a, b in segments:
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        if dx < -1e-5 or a[0] < reached - 1e-5 or (abs(dx) > 1e-5 and abs(dy) > max(1e-5, max_drift)):
+            raise ExtractionError("unsupported", "step histogram must be monotone in source x and axis-aligned")
+        reached = max(reached, b[0])
+    left, top, right, bottom = calibration.roi
+    visible, below = [], []
+    for a, b in segments:
+        if b[0] - a[0] <= 1e-5:
+            continue
+        if not (left <= a[0] <= right and left <= b[0] <= right):
+            raise ExtractionError("needs_manual_review", "horizontal step crosses ROI; no clipped interval inferred")
+        if calibration.contains(a) and calibration.contains(b):
+            visible.append([a, b])
+        elif min(a[1], b[1]) > bottom:
+            below.append(sorted([calibration.x.value(a[0]), calibration.x.value(b[0])]))
+        else:
+            raise ExtractionError("needs_manual_review", "step above or across the plot frame; height not displayed")
+    if not visible:
+        raise ExtractionError("unsupported", "no visible horizontal steps")
+    return visible, below
+
+
 def _uncertainty(spec: dict) -> dict:
     semantic = spec.get("uncertainty_semantics", "unlabeled_displayed_error")
     if semantic not in {"unlabeled_displayed_error", "statistical", "systematic"}:
@@ -257,29 +313,12 @@ def vector_series(paths: list[dict], calibration: Calibration) -> list[dict]:
         if spec.get("stacked") or geometry not in {"line", "scatter", "histogram", "step_histogram", "band"}:
             raise ExtractionError("unsupported", "stacked/unknown geometry is unsupported")
         if geometry == "step_histogram":
-            if len(selected) != 1 or any(item[0] != "l" for item in selected[0]["items"]):
-                raise ExtractionError(
-                    "unsupported", "step histogram requires one connected axis-aligned polyline"
-                )
-            vertices, _ = _polyline(selected[0])
+            if len(selected) != 1:
+                raise ExtractionError("unsupported", "step histogram requires one path")
             max_drift = finite(spec.get("max_step_drift", 0))
             if max_drift < 0:
                 raise ValueError("max_step_drift must be nonnegative")
-            segments = []
-            for a, b in zip(vertices, vertices[1:]):
-                dx, dy = b[0] - a[0], b[1] - a[1]
-                if dx < -1e-5 or (abs(dx) > 1e-5 and abs(dy) > max(1e-5, max_drift)):
-                    raise ExtractionError(
-                        "unsupported", "step histogram must be monotone in source x and axis-aligned"
-                    )
-                if dx > 1e-5:
-                    if not calibration.contains(a) or not calibration.contains(b):
-                        raise ExtractionError(
-                            "needs_manual_review", "horizontal step crosses ROI; no clipped interval inferred"
-                        )
-                    segments.append([a, b])
-            if not segments:
-                raise ExtractionError("unsupported", "no visible horizontal steps")
+            segments, below = step_profile(selected[0], calibration, max_drift)
             points = [[(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] for a, b in segments]
             result = series_record(spec, points, calibration, "rendered_step_intervals")
             result["rendered_intervals"] = [
@@ -290,13 +329,14 @@ def vector_series(paths: list[dict], calibration: Calibration) -> list[dict]:
                 sorted([calibration.y.value(a[1]), calibration.y.value(b[1])]) for a, b in segments
             ]
             result["source_vertical_drifts"] = [abs(a[1] - b[1]) for a, b in segments]
+            result["below_range_intervals"] = below
             result["original_bin_edges_verified"] = False
             result["sampling"] = {
                 "kind": "visible_step_spans",
                 "original_measurement_points": False,
                 "max_step_drift_source_units": max_drift,
                 "representative_position": "source_segment_midpoint",
-                "limitations": "Equal-height original bins may share a plateau; vertical baseline closures are not data. No zero or hidden bins recovered.",
+                "limitations": "Equal-height original bins may share a plateau; vertical baseline closures are not data. No zero or hidden bins recovered; steps drawn below the plot frame are listed in below_range_intervals without values.",
             }
         elif geometry == "line":
             if len(selected) != 1:

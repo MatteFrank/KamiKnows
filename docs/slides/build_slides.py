@@ -26,18 +26,18 @@ AUTHORS = "E. Apicella, F. Corchia, M. Franchini"
 # Plot questions (fastcalo_plots_values.jsonl, 18 answerable + 2 to refuse), by inspection; review pending.
 RESULTS_ROWS = [
     ["<b>current: every image of the corpus (224 plot chunks), one plot chunk per figure, <code>--solver</code></b>",
-     "<b>7 / 18 (+1 partial); new 2 / 8</b>", "<b>2 / 18; new 2 / 8</b>"],
+     "<b>7 / 18 (+1 partial); new 2 / 8</b>", "<b>2 / 18 (+1 partial); new 1 / 8</b>"],
     ["same, without the one-per-figure cap", "5 / 18; new 1 / 8", "2 / 18; new 1 / 8"],
     ["earlier: 77 plot chunks (2D maps and one 1D figure only), <code>--solver</code>", "9 / 18; new 2 / 8",
      "5 / 18 (+1 partial); new 1 / 8"]]
 RESULTS_NOTE = """<ul class="small">
-<li>"New" = pairs 7-10, values other than peaks. Both count questions are refused correctly in every run.</li>
+<li>"New" = pairs 7-10, values other than peaks. Qwen refuses both count questions; Mistral refuses one and answers the other with the number of bins.</li>
 <li>With every plot in the index the task is fairer and harder: the planner chooses among many similar
 plots of the same paper. Retrieval reaches the required series for 19 / 20 questions, so the misses are now
 the planner's: a decline although the right plot is there, the wrong panel, a computed number the answer
 does not use, the wrong axis.</li>
-<li>Qwen never invents a value: without the number it abstains. Mistral 7B rarely writes a valid plan and
-invents values when its plans fail.</li>
+<li>Qwen never invents a value: without the number it abstains. Mistral 7B computes a result for 7 / 20
+questions, often does not use it, and invents values when its plans fail.</li>
 <li>Near-identical runs differ by one or two questions: with 20 questions, read the trend, not the last digit.
 By inspection; expert review pending.</li></ul>"""
 
@@ -569,6 +569,25 @@ the vector route is unsupported.</li>
    "original_bin_edges_verified": false}, ...],
  "review_status": "pending"}""", "digitized_data.jsonl (shortened)", size=8.8)
 
+    s = deck.slide("Which vector paths are data")
+    s.html((LEFT, 106, 470, 470), """<ul class="small">
+<li>Axes, ticks, legend boxes and legend samples are paths too: calibration selects the data paths with
+strict rules (<code>infer_series</code>, <code>step_profile</code>).</li>
+<li><b>Step histogram</b>: only horizontal and vertical segments, never back in x, at least two visible steps over a
+quarter of the frame. A legend box (one step) and a legend sample (short) stay out.</li>
+<li><b>In pieces</b>: plotting libraries break a histogram where bins are not drawn (empty bins on a log axis);
+the pieces of one path are one histogram.</li>
+<li><b>Filled</b>: one polygon out along the steps, back along a horizontal baseline. A fill that returns at varying
+height is a band and is refused.</li>
+<li><b>Below the frame</b>: listed in <code>below_range_intervals</code>, never given a value. Above or across the
+frame: refused, the height is clipped.</li>
+<li><b>Fill + outline</b> with the same steps: one series, the outline. Same colour, different steps: two series
+(Geant4 filled, GAN outline).</li></ul>""")
+    s.image((490, 112, RIGHT, 330), ASSETS / "histogram_filled_review.png")
+    s.html((490, 336, RIGHT, 470), '<p class="small muted">Figure 3 of arXiv:1705.02355 (depth-weighted energy, log '
+           'axes): three filled Geant4 histograms and three GAN outlines, redrawn from the extracted numbers. Labels '
+           'whose ticks are outlines get OCR axes, but the curves are still read from the vector paths.</p>')
+
     s = deck.slide("Check the result: source vs reconstruction")
     s.image((LEFT, 108, RIGHT, 300), ASSETS / "histogram_1d_review.png")
     s.image((LEFT + 60, 305, RIGHT - 60, 462), ASSETS / "histogram_2d_review.png")
@@ -579,17 +598,19 @@ the vector route is unsupported.</li>
     s = deck.slide("What has been digitized so far")
     s.table((LEFT, 112, 560, 330), ["Run", "Files", "Result"], [
         ["Calibration, all figure files (automatic)", "224", "186 proposals; the rest flagged for review"],
-        ["Digitization, all figure files (automatic, one run)", "224", "119 digitized images, 322 series"],
-        ["&nbsp;&nbsp;by geometry", "", "55 2D maps, 93 step histograms, 174 curves"],
-        ["<b>In the chunks</b>", "224", "<b>224 plot chunks</b>: 119 images with values, 105 without"]],
+        ["Digitization, all figure files (automatic, one run)", "224", "141 digitized images, 488 series"],
+        ["&nbsp;&nbsp;by geometry", "", "55 2D maps, 259 step histograms, 174 curves"],
+        ["<b>In the chunks</b>", "224", "<b>224 plot chunks</b>: 141 images with values, 83 without"]],
         [0.45, 0.12, 0.43])
     s.html((585, 112, RIGHT, 470), """
 <div class="h">Current coverage</div>
 <ul class="small">
 <li>One calibration and one digitization run cover every figure file; chunking and the solver read
 that single folder.</li>
-<li>The 105 images without values get a chunk saying why (needs calibration, manual review, generic).</li>
-<li>The new 1D figures are not yet checked in the visual report; that review is the next step.</li>
+<li>The 83 images without values get a chunk saying why: 34 axes not calibrated, 32 cropped by
+<code>\\includegraphics</code> (trim, clip), 8 class conflicts, 6 generic, 3 unreadable pixel geometry.</li>
+<li>Only 3 of the 224 files are bitmaps (PNG); 221 are PDFs.</li>
+<li>The visual report is checked by hand for a sample; a full review is the next step.</li>
 </ul>""")
     s.note("Counts from the fastcalo corpus (5 papers). Values are estimates of what is displayed; manual review "
            "pending.", 360)
@@ -619,7 +640,7 @@ that single folder.</li>
     s.html((LEFT + 12, 360, RIGHT - 12, 450), '<p class="small"><b>Multi-panel figures</b>: every panel lists all '
            'the panels of its figure (<code>figure_panels</code>: position and handles). A question about the Geant4 '
            'panel that retrieves a CaloGAN panel still reaches the Geant4 data, and a comparison reaches both.</p>'
-           '<p class="small muted">fastcalo: 224 images → 224 plot chunks (median 209 words), next to 110 text chunks. '
+           '<p class="small muted">fastcalo: 224 images → 224 plot chunks (median 214 words), next to 110 text chunks. '
            'The earlier layout had 451 plot chunks (summaries, 24-row tables, figure overviews).</p>')
     s.code((LEFT, 462, RIGHT, 505), """
 python scripts/chunk.py sentence --parsed-dir $PARSED --exclude-backmatter --digitized-dir $DIGITIZED --output-dir $CHUNKS""",
@@ -770,13 +791,14 @@ Reference: x (eta) 47.544 vs 46.995, 0.549 apart
 <div class="h">What the extracted values are not</div>
 <ul class="small">
 <li>Original bin edges, event counts and experimental uncertainties: not recoverable from a drawing.</li>
-<li>Legend association: series are named by colour; the caption must say what each colour means.</li>
-<li>Broken axes, overlapping traces, 3D plots: extraction stops with a reason.</li>
+<li>Legend association: series are named by colour and drawing (purple curve, blue filled area); the caption or legend must say what each one means.</li>
+<li>Broken axes, overlapping pixel traces, 3D plots, figures cropped by LaTeX: extraction stops with a reason.</li>
 <li>Source-vs-reconstruction agreement is a visual check, not a scientific validation.</li></ul>""")
     s.html((480, 112, RIGHT, 470), """
 <div class="h">Next steps</div>
 <ul class="small">
-<li>Digitize every calibrated file and check the visual report.</li>
+<li>Read figures cropped by <code>\\includegraphics</code> (32 files) and calibrate the 34 remaining axes; select narrow histograms without picking up legends.</li>
+<li>Full review of the visual report.</li>
 <li>Expert review of the plot answers; a larger question set with hand-written plans.</li>
 <li>Better retrieval of the right panel for natural questions.</li>
 <li>Compare against original data where it exists (<code>recover</code>: PGFPlots tables, HEPData;
@@ -873,7 +895,7 @@ Series(series_id="<asset>/path_2",
        caveats=("values estimate the displayed figure ...",))""", "ONE SERIES (BLUE HISTOGRAM OF 1805.00850 FIG. 1)", size=8.6)
     s.html((500, 315, RIGHT, 470), """<div class="label">CATALOG</div>
 <p class="small">Maps a handle <code>&lt;asset_id&gt;/&lt;series_id&gt;</code> to its Series, or to the reason there is
-none (<i>plot not digitized (extraction status: needs_calibration)</i>). fastcalo: 322 series, 105 images without
+none (<i>plot not digitized (extraction status: needs_calibration)</i>). fastcalo: 488 series, 83 images without
 values.</p>""")
 
     s = deck.slide("Units, unknowns and refusals")
@@ -892,7 +914,8 @@ but convert only to themselves.</li>
     s.html((480, 112, RIGHT, 300), """<div class="label">NOTCOMPUTABLE: ONE ERROR, WITH THE REASON</div>
 <ul class="small"><li>the position is outside the plot or in a gap between bins</li>
 <li>the plot was not digitized</li><li>incompatible units, or an operation that needs 1D on a 2D series</li>
-<li>division by zero on a single number</li></ul>
+<li>division by zero on a single number</li>
+<li>a selection that keeps nothing, named where it happens: <code>restrict(h, x, 100, 200) keeps no element of h</code></li></ul>
 <p class="small">The planner, the answer and the reviewer all see the same reason.</p>""")
     s.code((480, 315, RIGHT, 470), """
 div(max(<blue>), max(<red>))
@@ -1146,13 +1169,13 @@ number without what the answer needs (a crossing coordinate without its bin): th
 <li>The wrong axis: cards give units but not axis titles (η, φ), so "along η" can become <code>y</code>.</li>
 <li>Many similar plots in the context: declines although the right plot is there, the wrong panel of the
 right figure, or a correct computed number that the answer model does not trust.</li>
-<li>Mistral 7B rarely writes a valid plan within 3 attempts, and still invents values when nothing is computed.</li></ul>""")
+<li>Mistral 7B often ends without a valid plan after 3 attempts, and invents values when nothing is computed.</li></ul>""")
     s.html((480, 112, RIGHT, 470), """
 <div class="h">Elsewhere</div>
 <ul class="small">
 <li><b>Retrieval</b>: with one plot chunk per figure the required series is reached for 19 / 20 questions;
 one natural question still gets another figure of the right paper.</li>
-<li><b>Coverage</b>: 119 of the 224 plotted images have values; the others can only be refused.</li>
+<li><b>Coverage</b>: 141 of the 224 plotted images have values; the others can only be refused.</li>
 <li><b>Evaluation</b>: 20 questions, inspected by hand; one or two questions are within noise. Expert review and a
 larger question set with plans are next.</li></ul>""")
 

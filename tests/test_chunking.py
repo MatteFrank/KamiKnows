@@ -228,3 +228,21 @@ def test_obsolete_text_classifiers_are_not_supported():
     for method in ['text_rules_v1', 'text_context_v2', 'text_context_v3', 'text_context_v4', 'text_context_v5']:
         with pytest.raises(ValueError, match='unsupported classification method'):
             FigureClassifier(method)
+
+
+def test_filled_series_is_named_by_its_fill_colour():
+    record = {
+        "calibration": {"series": [{"series_id": "path_4", "path_indices": [0]},
+                                   {"series_id": "path_5", "path_indices": [1]}]},
+        "raw_source": {"paths": [{"color": None, "fill": [0.0, 0.0, 0.8]},
+                                 {"color": [0.9, 0.1, 0.1], "fill": None}]},
+    }
+    assert chunking._series_label(record, {"series_id": "path_4"}, 1) == "blue filled area"
+    assert chunking._series_label(record, {"series_id": "path_5"}, 2) == "red curve"
+
+
+@pytest.mark.parametrize("colour,name", [
+    ([0.79, 0.16, 0.84], "purple"), ([1.0, 0.76, 0.24], "orange"), ([0.0, 0.0, 0.55], "blue"),
+    ([0.5, 0.5, 0.5], "grey"), ([0.05, 0.05, 0.05], "black"), ([0.1, 0.7, 0.2], "green"), (None, None)])
+def test_colour_names_follow_the_hue(colour, name):
+    assert chunking._colour_name(colour) == name

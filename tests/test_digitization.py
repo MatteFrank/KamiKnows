@@ -546,6 +546,40 @@ def test_digitization_figure_selection_validates_before_output(visual_run, tmp_p
     assert read_json(tmp_path / "selected" / "manifest.json")["params"]["figure_ids"] == [figure["figure_id"]]
 
 
+def step_config():
+    c = config()
+    c["series"][0].update(geometry="step_histogram", max_step_drift=0.1)
+    return c
+
+
+def test_step_histogram_in_pieces_lists_bins_below_the_frame():
+    first = [[10, 150], [10, 40], [30, 40], [30, 60], [50, 60], [50, 150], [60, 150]]
+    second = [[70, 150], [70, 80], [90, 80], [90, 150]]
+    items = [["l", a, b] for piece in (first, second) for a, b in zip(piece, piece[1:])]
+    series = vector_series([{"items": items, "rect": [10, 40, 90, 150]}], Calibration(step_config()))[0]
+    assert series["x"] == [2, 4, 8] and series["y"] == [6, 4, 2]
+    assert series["rendered_intervals"] == [[1, 3], [3, 5], [7, 9]]
+    assert series["below_range_intervals"] == [[5, 6]]
+
+
+def test_filled_step_histogram_keeps_the_steps_and_refuses_a_band():
+    outline = [[10, 150], [10, 40], [30, 40], [30, 60], [50, 60], [50, 150], [10, 150]]
+    fill = {"items": [["l", a, b] for a, b in zip(outline, outline[1:])], "fill": [0, 0, 1], "rect": [10, 40, 50, 150]}
+    series = vector_series([fill], Calibration(step_config()))[0]
+    assert series["x"] == [2, 4] and series["y"] == [6, 4] and series["below_range_intervals"] == []
+    band = [[10, 40], [30, 40], [30, 50], [50, 50], [50, 70], [30, 70], [30, 80], [10, 80]]
+    fill["items"] = [["l", a, b] for a, b in zip(band, band[1:])]
+    with pytest.raises(ExtractionError, match="varying height"):
+        vector_series([fill], Calibration(step_config()))
+
+
+def test_step_above_the_frame_is_refused():
+    above = [[10, 50], [10, -20], [30, -20], [30, 50], [50, 50]]
+    path = {"items": [["l", a, b] for a, b in zip(above, above[1:])], "rect": [10, -20, 50, 50]}
+    with pytest.raises(ExtractionError, match="above or across"):
+        vector_series([path], Calibration(step_config()))
+
+
 def test_step_histogram_requires_explicit_drift_tolerance():
     path = {"items": [["l", [10, 70], [30, 70.05]]], "rect": [10, 70, 30, 70.05]}
     c = config()

@@ -546,11 +546,9 @@ def run_digitization_review(*, digitized_dir: Path, output_dir: Path) -> dict:
                         color = series["raster_color_rgb"]
                     else:
                         spec = next(s for s in record["calibration"]["series"] if s["series_id"] == sid)
-                        color = record["raw_source"]["paths"][spec["path_indices"][0]].get("color") or [
-                            0,
-                            0,
-                            0,
-                        ]
+                        # A filled shape carries its colour in "fill"; a stroked one in "color".
+                        path = record["raw_source"]["paths"][spec["path_indices"][0]]
+                        color = path.get("color") or path.get("fill") or [0, 0, 0]
                     xs = []
                     ys = []
                     segments = []

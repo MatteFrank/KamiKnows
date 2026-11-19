@@ -10,8 +10,8 @@ or two questions is within noise.
 | | |
 |---|---|
 | Questions | `data/questions/fastcalo_plots_values.jsonl`: 10 pairs, 20 questions (18 answerable, 2 to refuse). Pairs 1-6 are the questions of `fastcalo_plots.jsonl`; pairs 7-10 ask for values other than peaks (a given bin, the first bin where one histogram overtakes the other, a local maximum in a range, a given heatmap cell) |
-| Plot data | one automatic calibration and one digitization of all 224 images of the corpus: 119 digitized (322 series: 55 2D maps, 93 step histograms, 174 curves), 105 with the reason they were not |
-| Chunks | sentence chunker, back matter excluded, plus one plot chunk per image: 224 plot chunks ([guide, step 5](guide.md#5-ingest-into-the-chunks)) |
+| Plot data | one automatic calibration and one digitization of all 224 images of the corpus: 141 digitized (488 series: 55 2D maps, 259 step histograms, 174 curves), 83 with the reason they were not |
+| Chunks | sentence chunker, back matter excluded, plus one plot chunk per image: 224 plot chunks, series named by colour and drawing ([guide, step 5](guide.md#5-ingest-into-the-chunks)) |
 | Retrieval | dense MiniLM, `explicit_arxiv`, top-5, at most one plot chunk per figure (`--max-plots-per-figure 1`) |
 | Generation | `grounded` prompt, question restated, context 32768 tokens, temperature 0, `--solver` (planner with up to 3 plans) |
 
@@ -36,11 +36,13 @@ reference answers within 1%.
 
 | Configuration | Qwen3 4B | Mistral 7B |
 |---|---|---|
-| **current** | **7 (+1 partial); new 2** | **2; new 2** |
+| **current** | **7 (+1 partial); new 2** | **2 (+1 partial); new 1** |
+| 119 digitized images (before histograms in pieces or filled were read) | 7 (+1 partial); new 2 | 2; new 2 |
 | same, without the one-per-figure cap | 5; new 1 | 2; new 1 |
 | earlier: 77 plot chunks (below) | 9; new 2 | 5 (+1 partial); new 1 |
 
-- Both count questions are refused correctly in every run.
+- Qwen refuses both count questions in every run. Mistral refused both until
+  the current run, where it answers one of them with "246", the number of bins.
 - With the required series retrieved for 19 of 20 questions, the misses are
   the planner's and the answer model's: Qwen declines to plan although the
   right plot is in the context (pair 7 natural, pair 10 figure-reference),
@@ -50,12 +52,41 @@ reference answers within 1%.
   natural). Its pair 2 answer computes the right separation, 0.549, and then
   calls it "greater than one cell" (partial).
 - Qwen never invents a value: without the number it abstains. Mistral 7B
-  writes a valid plan for 4 of 20 questions and invents values when its plans
-  fail.
+  computes a result for 7 of 20 questions, often does not use it (a computed
+  195 GeV answered as "the 101st bin"), and invents values when its plans fail.
 - Fewer correct answers than with 77 plot chunks is the cost of the harder
   setting, not of worse data: the plots of the questions and their values are
   identical in both.
 - Near-identical runs differ by one or two questions; read the trend.
+
+## Reading histograms drawn in pieces or filled
+
+A digitization of every image first gave 119 digitized images. Of the 105
+others, 28 had gone to the pixel route and 27 of those failed. Only 3 of the 28
+were bitmaps: the other 25 were vector PDFs with calibrated axes whose curves
+had not been selected as series. Reading the PDF paths of those files showed
+three causes:
+
+| Files | What the PDF contains | Why it was not selected |
+|---|---|---|
+| 16 (`sum_pred` figures of 1805.00850) | stroked step histograms broken into pieces where bins are empty | a series had to be one connected polyline |
+| 4 (`lateral_width` of the two CaloGAN papers) | filled histograms closed along a baseline far below the page | filled paths were never candidates |
+| 2 (`depthweightedenergy` of the two CaloGAN papers) | tick labels drawn as outlines, so the axes came from OCR | the OCR route did not look for vector curves at all |
+
+The selection now reads histograms in pieces and filled histograms (with the
+rules in the [guide](guide.md#which-vector-paths-are-data)), and keeps vector
+curves when the axes come from OCR. Result on the same corpus: 141 digitized
+images (+22, all 22 files above), 488 series; no image that was digitized
+before lost a series or changed a value, 34 of them gained a series (a fill or
+an outline that had been dropped). The hand-written plans still match 20/20 and
+retrieval is identical (paper 20/20, required series 19/20).
+
+The plot answers do not change beyond noise: the 20 questions are about two
+figures that were already digitized. Measuring the effect on answers needs
+questions on the recovered figures. In the same work a planner step that
+emptied a series (a `restrict` on a range without bins, followed by
+`evaluate`) crashed a Mistral run; such a selection is now refused where it
+happens, with its expression.
 
 ## Earlier configuration: 77 plot chunks
 

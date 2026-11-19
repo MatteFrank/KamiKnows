@@ -458,7 +458,7 @@ compute_<evalset>_<plans>[_<variant>]
 | evalset | short tag of the questions file: `paired` = `fastcalo_paired.jsonl`, `plots` = `fastcalo_plots.jsonl`, `plotvalues` = `fastcalo_plots_values.jsonl`, `plotplans` = `fastcalo_plots_values_plans.jsonl` |
 | plans | where the executed plans come from: `expected` = the `expected_plan` annotations |
 | classifier | `vision` (Gemma) or `text` |
-| variant | the one thing that differs from the baseline, e.g. `synthesis`, `np512`; `full_auto` = automatic calibration or digitization of every image of the corpus (no figure filter), `fullauto` = chunks or runs built on that digitization, `onefig` = `--max-plots-per-figure 1` (named so while it was not yet the default) |
+| variant | the one thing that differs from the baseline, e.g. `synthesis`, `np512`; `full_auto` = automatic calibration or digitization of every image of the corpus (no figure filter), `fullauto` = chunks or runs built on that digitization, `steppaths` = automatic calibration and digitization (and the runs built on them) that select step histograms drawn in pieces or filled, `colournames` = chunks whose series names come from the hue and the drawing (curve, filled area), `onefig` = `--max-plots-per-figure 1` (named so while it was not yet the default) |
 
 Retries append `_retry<N>`.
 
@@ -570,8 +570,8 @@ numerical evidence. Retrieval, generation and review do not change.
 |---|---|---|
 | `inventory` | finds figure environments, captions, labels and figure files | `figures.jsonl` |
 | `classify` | says what each file is (plot type, axes, panels); `--classifier vision` (Gemma, GPU) or `text` | `asset_predictions.jsonl` |
-| `calibrate` | matches tick labels to tick marks and fits linear/log10 axes, units, colour bars; OCR fallback | `calibration_proposals.json`, `review.html` |
-| `digitize` | reads vector paths or colour cells through the calibrated axes | `digitized_data.jsonl` |
+| `calibrate` | matches tick labels to tick marks and fits linear/log10 axes, units, colour bars (OCR fallback); selects the vector paths that are data series | `calibration_proposals.json`, `review.html` |
+| `digitize` | reads the selected vector paths (curves; step histograms, also drawn in pieces or filled) or colour cells through the calibrated axes | `digitized_data.jsonl` |
 | `digitization-review` | redraws the extracted values next to each source figure | `review.html`, `report.pdf` |
 | `calibration-review` | re-renders the HTML report of a calibration run | `review.html` |
 | `recover`, `benchmark` | optional: original data (PGFPlots, HEPData) and comparison with reference values | |
@@ -605,10 +605,13 @@ the other modes run on CPU. All dependencies, including the OCR engine, are in
 Extracted values are estimates of what the figure displays. Calibration and
 digitization report a reason instead of guessing when axes are ambiguous or a
 layout is unsupported; original bins, counts and uncertainties are never
-inferred. On the fastcalo corpus one automatic calibration and one digitization
-of all 224 images give 119 digitized images (322 series: 2D maps, step
-histograms and curves); the other 105 report why they were not digitized.
-Manual review of the digitized values is pending.
+inferred; steps drawn below the plot frame are listed without a value. The
+guide explains which vector paths count as data and why. On the fastcalo corpus
+one automatic calibration and one digitization of all 224 images give 141
+digitized images (488 series: 55 2D maps, 259 step histograms, 174 curves); the
+other 83 report why they were not digitized (mostly axes without a reliable
+calibration and figures cropped by `\includegraphics`). Manual review of the
+digitized values is pending.
 
 - [Plot extraction guide](docs/plot_extractor/guide.md): how each step works, outputs, limits, code.
 - [Slides](docs/plot_extractor/KamiKnows_plot_extraction.pdf): the same chain step by step, with examples.
@@ -638,8 +641,13 @@ composition of them is again an operation:
 `quantile`, `fwhm`, `linear_fit`, `distance`) only as compositions of the
 primitives. Units propagate and are checked; anything the data cannot give
 (a point outside the plot, an undigitized figure, incompatible units) raises
-`NotComputable` with the reason instead of an approximation. Every number
-carries the expression that produced it, e.g. `div(max(A), max(B))`.
+`NotComputable` with the reason instead of an approximation. A selection that
+keeps no element is refused where it happens, e.g. `restrict(h, x, 100, 200)
+keeps no element of h` for a histogram that ends at 40: no operation can use an
+empty series, and the reason has to name the step that emptied it, not a later
+one. Every number carries the expression that produced it, e.g.
+`div(max(A), max(B))`. Bins drawn below the plotted range are gaps of the
+series and its caveats say how many there are.
 
 A plan is a JSON list of steps over the operations in `registry.py`; later
 steps refer to earlier ones (`$a`, `$a[0].x`):

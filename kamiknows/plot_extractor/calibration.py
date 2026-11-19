@@ -19,7 +19,14 @@ from kamiknows.common import (
     write_manifest,
 )
 from .assets import local_path
-from .digitization import Axis, Calibration, _polyline, prepare_pdf_orientation, inspect_representation
+from .digitization import (
+    Axis,
+    Calibration,
+    _polyline,
+    inspect_representation,
+    prepare_pdf_orientation,
+    step_profile,
+)
 
 METHOD = "axes_auto"
 
@@ -498,49 +505,85 @@ def infer_axis(
     return config, {**details, "reason": "axis_ticks_consistent"}
 
 
+STEP_DRIFT = 0.1
+
+
+def _step_candidate(path: dict, calibration: Calibration) -> frozenset | None:
+    """Visible steps of a path that reads as a step histogram: two or more steps over a quarter of the frame."""
+    try:
+        visible, _ = step_profile(path, calibration, STEP_DRIFT)
+    except (ValueError, TypeError):
+        return None
+    span = max(b[0] for _, b in visible) - min(a[0] for a, _ in visible)
+    if len(visible) < 2 or span < (calibration.roi[2] - calibration.roi[0]) * 0.25:
+        return None
+    return frozenset(tuple(round(v, 1) for v in a + b) for a, b in visible)
+
+
 def infer_series(paths: list[dict], calibration: Calibration) -> list[dict]:
-    series = []
+    """Select data paths: step histograms (stroked, in pieces, or filled) and connected lines inside the frame.
+
+    A fill and its outline drawn with the same steps are one series; the outline is kept.
+    """
+    steps, series = {}, {}
     for i, path in enumerate(paths):
-        if len(path["items"]) < 3 or path.get("fill") is not None or path.get("closePath"):
+        if len(path["items"]) < 3:
+            continue
+        candidate = _step_candidate(path, calibration)
+        if candidate is not None:
+            steps[i] = candidate
+            continue
+        if path.get("fill") is not None or path.get("closePath"):
             continue
         try:
-            points, sampled = _polyline({"items": path["items"]})
+            points, _ = _polyline({"items": path["items"]})
         except (ValueError, TypeError):
             continue
-        if math.dist(points[0], points[-1]) < 1e-5:
-            continue
         if (
-            max(p[0] for p in points) - min(p[0] for p in points)
+            math.dist(points[0], points[-1]) < 1e-5
+            or max(p[0] for p in points) - min(p[0] for p in points)
             < (calibration.roi[2] - calibration.roi[0]) * 0.25
+            or not all(calibration.contains(p) for p in points)
         ):
             continue
-        steps = all(
-            b[0] >= a[0] - 1e-5 and (abs(b[0] - a[0]) <= 1e-5 or abs(b[1] - a[1]) <= 0.1)
-            for a, b in zip(points, points[1:])
-        )
-        if steps and not sampled:
-            segments = [(a, b) for a, b in zip(points, points[1:]) if b[0] - a[0] > 1e-5]
-            if not segments or any(
-                not calibration.contains(a) or not calibration.contains(b) for a, b in segments
-            ):
-                continue
-            geometry = "step_histogram"
-        elif all(calibration.contains(p) for p in points):
-            geometry = "line"
-        else:
-            continue
+        series[i] = "line"
+
+    def rank(i: int) -> tuple:
+        return (paths[i].get("fill") is not None, i)
+
+    for i, own in steps.items():
+        if not any(j != i and own <= other and (own < other or rank(j) < rank(i)) for j, other in steps.items()):
+            series[i] = "step_histogram"
+    selected = []
+    for i in sorted(series):
         spec = {
             "series_id": f"path_{i}",
             "label": None,
-            "geometry": geometry,
+            "geometry": series[i],
             "path_indices": [i],
             "observable": "unreviewed_displayed_series",
             "coordinate_definition": "displayed source geometry mapped through proposed axis ticks",
         }
-        if steps:
-            spec["max_step_drift"] = 0.1
-        series.append(spec)
-    return series
+        if series[i] == "step_histogram":
+            spec["max_step_drift"] = STEP_DRIFT
+        selected.append(spec)
+    return selected
+
+
+def _with_vector_series(path: Path, config: dict) -> dict:
+    """OCR may supply only the axes: when the curves are vector paths, select them natively instead of pixels."""
+    import pymupdf
+
+    if config.get("coordinate_system") != "pdf_points" or config["raster_extraction"]["kind"] != "colored_traces":
+        return config
+    with pymupdf.open(path) as document:
+        page = document[0]
+        prepare_pdf_orientation(page, config.get("pdf_orientation", "display"))
+        series = infer_series(page.get_drawings(), Calibration(config))
+    if not series:
+        return config
+    native = {key: value for key, value in config.items() if key != "raster_extraction"}
+    return {**native, "series": series, "digitization_readiness": "ready"}
 
 
 def _propose_1d(path: Path) -> tuple[dict | None, dict]:
@@ -1565,6 +1608,10 @@ def run_calibration(
                         fallback_reason=evidence["reason"],
                     )
                     config = raster_calibration_proposal(report["ocr_evidence"], expected)
+                    if config is not None and report["source_inspection"]["representation"] != "raster":
+                        config = _with_vector_series(path, config)
+                        if not config.get("raster_extraction"):
+                            report["routing"]["selected"] = "pymupdf"
                 elif config is not None:
                     report["routing"]["selected"] = "raster" if config.get("raster_extraction") else "pymupdf"
                 report["calibration_type"] = evidence.get("calibration_type", expected)

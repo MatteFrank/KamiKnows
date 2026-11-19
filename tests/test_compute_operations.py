@@ -44,6 +44,14 @@ def test_restrict_keeps_bins_by_center_and_converts_limits():
         restrict(h, "x", 30, 10)
 
 
+def test_a_selection_that_keeps_nothing_is_refused_with_its_expression():
+    h = histogram([1, 2, 3, 4], [0, 10, 20, 30, 40])
+    with pytest.raises(NotComputable, match=r"restrict\(h, x, 100, 200\) keeps no element of h"):
+        restrict(h, "x", 100, 200)
+    with pytest.raises(NotComputable, match="keeps no element"):
+        combine(h, 0, "div")
+
+
 def test_section_cuts_a_row_of_cells():
     g = grid([[1, 2, 3], [4, 5, 6]])
     row = section(g, "y", 1)

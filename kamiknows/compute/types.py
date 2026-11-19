@@ -141,7 +141,13 @@ class Series:
         return dataclasses.replace(self, origin=origin, **changes)
 
     def take(self, selection: np.ndarray, origin: str) -> Series:
-        """The elements picked by a boolean mask or an index array."""
+        """The elements picked by a boolean mask or an index array.
+
+        No operation can use an empty series, so a selection that keeps nothing is refused here,
+        with the expression that emptied it, instead of failing later inside another operation.
+        """
+        if self.values[selection].size == 0:
+            raise NotComputable(f"{origin} keeps no element of {self.origin}")
         return self.derive(
             origin,
             centers=self.centers[selection],

@@ -133,4 +133,9 @@ def _caveats(raw: dict[str, Any]) -> tuple[str, ...]:
         caveats.append("bin edges are the drawn ones; the original binning is unverified")
     if "color_inverted_estimate" in raw.get("value_states", ()):
         caveats.append("values are read from the colour scale")
+    if raw.get("below_range_intervals"):
+        caveats.append(
+            f"{len(raw['below_range_intervals'])} drawn bins lie below the plotted range: "
+            "their values are not displayed (gaps between bins)"
+        )
     return tuple(caveats)

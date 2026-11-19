@@ -127,6 +127,50 @@ backend never switches silently. `digitized_data.jsonl` holds one record per
 asset with its series, units, axis scales, calibration, source hash and quality
 flags. Failed or skipped assets stay as explicit records with a reason.
 
+### Which vector paths are data
+
+Calibration also chooses, among the vector paths of the figure, the ones that
+are data series (`infer_series`); digitization reads exactly those paths. Axes,
+ticks, legend boxes and legend samples are paths too, so the selection is
+deliberately strict. A path is a **step histogram** when, read with
+`step_profile`, it has only horizontal and vertical segments, never goes back in
+x, and has at least two visible steps over at least a quarter of the frame
+width. Otherwise an unfilled, connected path lying inside the frame is a
+**line**. Each rule answers a way real plots are drawn:
+
+- **Histograms in pieces.** Plotting libraries (matplotlib, ROOT) break a
+  stroked histogram where bins are not drawn, typically empty bins on a log
+  axis: the path drops to a baseline below the frame and restarts after the
+  gap. The pieces of one path are read as one histogram, as long as no piece
+  goes back in x. Requiring one connected polyline would drop most histograms
+  with empty bins (all the `sum_pred` figures of arXiv:1805.00850).
+- **Filled histograms.** A filled histogram is one polygon that runs along the
+  steps and returns along a baseline. The way out is the histogram; the way back
+  must be a single horizontal line at or below every step. A fill that returns
+  at varying height is a band or an arbitrary shape and is refused: reading its
+  lower edge as a histogram would invent values.
+- **Bins below the frame.** A step drawn entirely below the frame is not
+  displayed (an empty bin on a log axis has no finite height). Its interval is
+  stored in `below_range_intervals`, without a value; the card and the solver
+  say so. A step above the frame or across its sides is refused, because its
+  height is clipped and unknown.
+- **Two steps, a quarter of the width.** A legend box is a filled rectangle,
+  which reads as a one-step histogram, and a legend sample is a short line. Both
+  thresholds keep them out. The price: a real histogram narrower than a quarter
+  of the frame is not selected (two narrow GAN outlines in Figure 3 of
+  arXiv:1705.02355 are missing for this reason).
+- **Fill and outline.** A histogram is often drawn twice, as a fill and as its
+  outline. When two paths have the same visible steps they are one series and
+  the outline is kept. Two paths of the same colour with different steps stay
+  two series: in the CaloGAN figures the filled histogram is Geant4 and the
+  outline of the same colour is the GAN.
+
+When the tick labels of a vector PDF are drawn as outlines rather than text,
+the axes come from OCR, but the curves are still selected from the vector
+paths. Reading them from pixels instead would lose precision and cannot
+separate overlapping coloured histograms. `calibration_source:
+ocr_axis_ticks` keeps it visible that the axes are unverified.
+
 Inspect the result before using it:
 
 ```bash
@@ -170,9 +214,29 @@ the extracted values:
 | caveat | `Values estimate the displayed figure, not the original measurements; ...` |
 
 The characteristic numbers (ranges, maximum, tied maxima such as
-`(2 tied cells, first shown)`) are computed with `kamiknows.compute`, the same
-code that answers the questions, so a card and an answer cannot disagree.
-Series are named by their legend label, else by their observed colour.
+`(2 tied cells, first shown)`, bins drawn below the plotted range) are computed
+with `kamiknows.compute`, the same code that answers the questions, so a card
+and an answer cannot disagree.
+
+Series are named by their legend label, else by their colour and how they are
+drawn: `purple curve`, `blue filled area`. The name is what lets the planner
+match a series to the caption or legend ("the blue histogram"), so:
+
+- **Colour names come from the hue**, in basic words (red, orange, yellow,
+  green, cyan, blue, purple, magenta, grey, black). Naming by the dominant RGB
+  channel only finds red, green and blue: matplotlib purple `(0.79, 0.16,
+  0.84)` has two strong channels and orange `(1.0, 0.76, 0.24)` too, and both
+  would get no name.
+- **A filled shape has its colour in the fill**, a stroked one in the stroke;
+  the name says which (`filled area` or `curve`). In Figure 3 of
+  arXiv:1705.02355 a blue fill (e⁺ Geant4) and a blue outline (e⁺ GAN) are
+  different data; "blue curve" for both would make them indistinguishable.
+- **Repeated names get a number** (`blue curve 1`, `blue curve 4`) when two
+  series of one image would otherwise share a name.
+
+Example of a card line with bins below the range: `- blue filled area: 66
+bins; X from 215.4 to 1e+05; maximum 1.9e-05 at X = 475.1; 33 more bins drawn
+below the plotted range (values not displayed).`
 
 Every plot chunk carries `plot_link`: the digitized record (`asset_id`,
 `data_id`, `extraction_status`, the SHA-256 of `digitized_data.jsonl`) and,
@@ -188,8 +252,8 @@ Panel positions are added only when the LaTeX source establishes the rows, and
 are left out of `retrieval_text` so that position words do not steer ranking.
 The chunker refuses a run whose data or source hashes no longer match, or
 that records the same image twice. On the fastcalo corpus the digitization of
-all 224 images gives 224 plot chunks (119 with data, 105 not digitized; median
-209 words), next to 110 text chunks.
+all 224 images gives 224 plot chunks (141 with data, 83 not digitized; median
+214 words), next to 110 text chunks.
 
 Why this layout: earlier layouts put the values in the chunks (a summary plus
 blocks of 24 rows per series, 451 plot chunks). Retrieval worked, but 4B and
@@ -233,9 +297,21 @@ evaluated fewer tokens than a quarter of those characters is flagged
   hidden points and experimental uncertainties cannot be recovered, and the
   evidence says so.
 - Legend-to-series association is not automatic: series are named by their
-  colour, and the caption must say what each colour means.
-- Broken axes, overlapping traces, 3D plots and ambiguous layouts stop
+  colour and drawing (curve or filled area), and the caption or legend must say
+  what each one means.
+- Broken axes, overlapping pixel traces, 3D plots and ambiguous layouts stop
   calibration or extraction with a reason rather than producing numbers.
+- Figures cropped or rotated by `\includegraphics` (`trim`, `clip`, `angle`)
+  need the visible region to be stated explicitly; they are reported, not
+  digitized (32 files of the fastcalo corpus).
+- Histograms narrower than a quarter of the frame are not selected
+  automatically (see "Which vector paths are data").
+
+On the fastcalo corpus one automatic run digitizes 141 of the 224 images (488
+series: 55 2D maps, 259 step histograms, 174 curves). The other 83 report why:
+34 without a reliable axis calibration, 32 cropped by LaTeX, 8 whose
+classification conflicts with the PDF, 6 generic graphics, 3 with pixel
+geometry that cannot be read unambiguously.
 - Agreement between source and reconstruction is a visual check, not a
   scientific validation against original data.
 
@@ -253,8 +329,8 @@ or a `recover` run). Neither is needed for the QA chain above.
 |---|---|
 | `latex.py`, `assets.py`, `inventory.py` | figure environments, captions, labels, asset resolution |
 | `classification.py` | text and vision classifiers, Gemma prompt, rendering |
-| `calibration.py` | frames, ticks, scale fits, colour bars, OCR fallback |
-| `digitization.py` | axis mapping, PyMuPDF and raster extraction |
+| `calibration.py` | frames, ticks, scale fits, colour bars, OCR fallback, selection of the data paths (`infer_series`) |
+| `digitization.py` | axis mapping, step histograms in pieces or filled (`step_profile`), PyMuPDF and raster extraction |
 | `pipeline.py`, `records.py` | run orchestration, provenance, output records |
 | `recovery.py` | PGFPlots and HEPData recovery |
 | `validation.py` | structural checks, calibration and digitization reports, benchmark |

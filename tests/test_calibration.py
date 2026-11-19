@@ -10,7 +10,7 @@ from kamiknows.plot_extractor.validation import run_calibration_review
 from kamiknows.plot_extractor.digitization import Calibration, vector_series, read_pdf
 
 
-def make_pdf(path, log=False, units=True, second=False, tick_count=3):
+def make_pdf(path, log=False, units=True, second=False, tick_count=3, data=None):
     pdf = pytest.importorskip("pymupdf")
     with pdf.open() as doc:
         page = doc.new_page(width=320, height=240)
@@ -30,8 +30,11 @@ def make_pdf(path, log=False, units=True, second=False, tick_count=3):
             page.insert_text((150, 218), "(m)", fontsize=10)
             page.insert_text((8, 110), "(s)", fontsize=10)
         shape = page.new_shape()
-        shape.draw_polyline([(65, 190), (65, 130), (130, 130), (130, 80), (265, 80), (265, 190)])
-        shape.finish(color=(0, 0, 1), closePath=False)
+        if data is None:
+            shape.draw_polyline([(65, 190), (65, 130), (130, 130), (130, 80), (265, 80), (265, 190)])
+            shape.finish(color=(0, 0, 1), closePath=False)
+        else:
+            data(shape)
         shape.commit()
         page.draw_rect(pdf.Rect(175, 40, 255, 60), color=(0, 0, 0), fill=(1, 1, 1))
         doc.save(path)
@@ -383,6 +386,59 @@ def test_major_tick_geometry_wins_over_closer_minor_ticks():
     config, evidence = infer_axis(paths, words, [80, 20, 280, 220], "y")
     assert config is not None, evidence
     assert [a["position"] for a in config["anchors"]] == [20.0, 70.0, 120.0]
+
+
+STEPS = [(70, 200), (70, 100), (110, 100), (110, 120), (150, 120), (150, 200)]
+LATER = [(190, 200), (190, 60), (230, 60), (230, 200)]
+
+
+def draw_steps(filled):
+    """A histogram that drops below the frame (bottom at y=180): in two pieces, or filled with its outline."""
+
+    def draw(shape):
+        if filled:
+            shape.draw_polyline(STEPS + LATER + [(70, 200)])
+            shape.finish(fill=(0.8, 0.2, 0.2), color=None, closePath=False)
+            shape.draw_polyline(STEPS + LATER)
+            shape.finish(color=(0.8, 0.2, 0.2), closePath=False)
+        else:
+            shape.draw_polyline(STEPS)
+            shape.draw_polyline(LATER)
+            shape.finish(color=(0, 0.5, 0), closePath=False)
+
+    return draw
+
+
+@pytest.mark.parametrize("filled", [False, True])
+def test_histogram_in_pieces_or_filled_is_selected_once(tmp_path, filled):
+    path = tmp_path / "steps.pdf"
+    make_pdf(path, data=draw_steps(filled))
+    config, evidence = propose_pdf(path)
+    assert config is not None, evidence
+    assert len(config["series"]) == 1 and config["series"][0]["geometry"] == "step_histogram"
+    cal = Calibration(config)
+    paths, _, _ = read_pdf(path, cal, 72)
+    assert paths[config["series"][0]["path_indices"][0]].get("fill") is None  # the outline, not the fill
+    series = vector_series(paths, cal)[0]
+    flat = [v for interval in series["rendered_intervals"] for v in interval]
+    assert flat == pytest.approx([0.25, 2.25, 2.25, 4.25, 6.25, 8.25])
+    below = [v for interval in series["below_range_intervals"] for v in interval]
+    assert below == (pytest.approx([4.25, 6.25]) if filled else [])
+
+
+def test_ocr_axes_still_read_vector_curves(tmp_path):
+    from kamiknows.plot_extractor.calibration import _with_vector_series
+
+    path = tmp_path / "synthetic.pdf"
+    make_pdf(path)
+    config, _ = propose_pdf(path)
+    ocr = {**config, "series": [], "calibration_source": "ocr_axis_ticks",
+           "raster_extraction": {"kind": "colored_traces", "method": "pixel_geometry_v1"}}
+    native = _with_vector_series(path, ocr)
+    assert "raster_extraction" not in native and native["series"][0]["geometry"] == "step_histogram"
+    assert native["calibration_source"] == "ocr_axis_ticks"
+    pixels = {**ocr, "coordinate_system": "pixels"}
+    assert _with_vector_series(path, pixels) is pixels
 
 
 def test_false_2d_suggestion_can_use_verified_1d_series(tmp_path):
